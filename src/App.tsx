@@ -46,10 +46,6 @@ export default function App() {
 
   const [showClassPicker, setShowClassPicker] = useState(false);
 
-  const selectedClassesRef = useRef(selectedClasses);
-
-  selectedClassesRef.current = selectedClasses;
-
   const [apiKey, setApiKey] = useState(
     () => sessionStorage.getItem(SESSION_API_KEY) ?? "",
   );
@@ -60,9 +56,64 @@ export default function App() {
     Record<number, PersonDescriptionState>
   >({});
 
+  const selectedClassesRef = useRef(selectedClasses);
+
+  const imgRef = useRef<HTMLImageElement>(null);
+
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  const imageCanvasRef = useRef<HTMLCanvasElement>(null);
+
+  const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const streamRef = useRef<MediaStream | null>(null);
+
+  const cameraLoopRef = useRef<number | null>(null);
+
+  const runningRef = useRef(false);
+
   const geminiLastRunRef = useRef(0);
 
   const geminiRunningRef = useRef(false);
+
+  const leftPanelRef = useRef<HTMLDivElement>(null);
+
+  selectedClassesRef.current = selectedClasses;
+
+  const [resultsPanelHeight, setResultsPanelHeight] = useState<
+    number | undefined
+  >(undefined);
+
+  useEffect(() => {
+    const el = leftPanelRef.current;
+
+    if (!el) return;
+
+    const mq = window.matchMedia("(min-width: 768px)");
+
+    const updateHeight = () => {
+      setResultsPanelHeight(
+        mq.matches ? el.getBoundingClientRect().height : undefined,
+      );
+    };
+
+    updateHeight();
+
+    const ro = new ResizeObserver(updateHeight);
+
+    ro.observe(el);
+
+    mq.addEventListener("change", updateHeight);
+    window.addEventListener("resize", updateHeight);
+
+    return () => {
+      ro.disconnect();
+      mq.removeEventListener("change", updateHeight);
+      window.removeEventListener("resize", updateHeight);
+    };
+  }, [mode, imageUrl, cameraActive, status]);
 
   useEffect(() => {
     if (apiKey) {
@@ -86,26 +137,13 @@ export default function App() {
     });
   };
 
-  const selectAllClasses = () =>
+  const selectAllClasses = () => {
     setSelectedClasses(new Set(COCO_CLASSES.map((_, i) => i)));
+  };
 
-  const clearAllClasses = () => setSelectedClasses(new Set());
-
-  const imgRef = useRef<HTMLImageElement>(null);
-
-  const videoRef = useRef<HTMLVideoElement>(null);
-
-  const imageCanvasRef = useRef<HTMLCanvasElement>(null);
-
-  const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
-
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const streamRef = useRef<MediaStream | null>(null);
-
-  const cameraLoopRef = useRef<number | null>(null);
-
-  const runningRef = useRef(false);
+  const clearAllClasses = () => {
+    setSelectedClasses(new Set());
+  };
 
   const analyzePerson = useCallback(
     async (
@@ -118,7 +156,6 @@ export default function App() {
 
         setPersonDescriptions((prev) => ({
           ...prev,
-
           [index]: {
             loading: false,
             error: "กรุณากรอก Gemini API key ก่อน",
@@ -137,7 +174,6 @@ export default function App() {
 
         setPersonDescriptions((prev) => ({
           ...prev,
-
           [index]: {
             loading: false,
             error: "ครอปภาพบุคคลไม่สำเร็จ",
@@ -149,7 +185,6 @@ export default function App() {
 
       setPersonDescriptions((prev) => ({
         ...prev,
-
         [index]: {
           loading: true,
           thumbnail,
@@ -158,6 +193,7 @@ export default function App() {
 
       try {
         const text = await describePersonImage(thumbnail, apiKey.trim());
+
         const attire = parseAttireType(text);
         const gender = parseGenderType(text);
         const ageGroup = parseAgeGroupType(text);
@@ -179,7 +215,6 @@ export default function App() {
 
         setPersonDescriptions((prev) => ({
           ...prev,
-
           [index]: {
             loading: false,
             thumbnail,
@@ -212,7 +247,6 @@ export default function App() {
 
       if (!apiKey.trim()) {
         setShowApiKeyInput(true);
-
         return;
       }
 
@@ -228,7 +262,6 @@ export default function App() {
         }
       } finally {
         geminiRunningRef.current = false;
-
         geminiLastRunRef.current = performance.now();
       }
     },
@@ -240,7 +273,14 @@ export default function App() {
 
     const url = URL.createObjectURL(file);
 
-    setImageUrl(url);
+    setImageUrl((previousUrl) => {
+      if (previousUrl) {
+        URL.revokeObjectURL(previousUrl);
+      }
+
+      return url;
+    });
+
     setDetections([]);
     setPersonDescriptions({});
     setStatus("idle");
@@ -294,26 +334,43 @@ export default function App() {
   }, [analyzeAllPeople]);
 
   const stopCamera = useCallback(() => {
-    if (cameraLoopRef.current) {
+    if (cameraLoopRef.current !== null) {
       window.clearTimeout(cameraLoopRef.current);
-
       cameraLoopRef.current = null;
     }
 
-    streamRef.current?.getTracks().forEach((track) => track.stop());
+    runningRef.current = false;
+
+    const video = videoRef.current;
+
+    if (video) {
+      video.pause();
+      video.srcObject = null;
+    }
+
+    streamRef.current?.getTracks().forEach((track) => {
+      track.stop();
+    });
 
     streamRef.current = null;
 
     setCameraActive(false);
+
     setStatus("idle");
 
     setDetections([]);
+
     setPersonDescriptions({});
 
     const overlay = overlayCanvasRef.current;
 
     if (overlay) {
-      overlay.getContext("2d")?.clearRect(0, 0, overlay.width, overlay.height);
+      const ctx = overlay.getContext("2d");
+
+      ctx?.clearRect(0, 0, overlay.width, overlay.height);
+
+      overlay.width = 0;
+      overlay.height = 0;
     }
   }, []);
 
@@ -322,20 +379,28 @@ export default function App() {
 
     const overlay = overlayCanvasRef.current;
 
+    if (!streamRef.current) {
+      return;
+    }
+
     if (!video || !overlay || video.readyState < 2) {
-      cameraLoopRef.current = window.setTimeout(
-        cameraLoop,
-        CAMERA_DETECT_INTERVAL_MS,
-      );
+      if (streamRef.current) {
+        cameraLoopRef.current = window.setTimeout(
+          cameraLoop,
+          CAMERA_DETECT_INTERVAL_MS,
+        );
+      }
 
       return;
     }
 
     if (runningRef.current) {
-      cameraLoopRef.current = window.setTimeout(
-        cameraLoop,
-        CAMERA_DETECT_INTERVAL_MS,
-      );
+      if (streamRef.current) {
+        cameraLoopRef.current = window.setTimeout(
+          cameraLoop,
+          CAMERA_DETECT_INTERVAL_MS,
+        );
+      }
 
       return;
     }
@@ -360,7 +425,6 @@ export default function App() {
         overlay.height !== video.videoHeight
       ) {
         overlay.width = video.videoWidth;
-
         overlay.height = video.videoHeight;
       }
 
@@ -373,6 +437,7 @@ export default function App() {
       }
 
       setStatus("done");
+
       setErrorMsg("");
 
       const now = performance.now();
@@ -407,6 +472,7 @@ export default function App() {
 
   const startCamera = useCallback(async () => {
     setErrorMsg("");
+
     setStatus("loading-model");
 
     try {
@@ -428,47 +494,106 @@ export default function App() {
 
       streamRef.current = stream;
 
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-
-        await videoRef.current.play();
-      }
-
       geminiLastRunRef.current = 0;
 
       setCameraActive(true);
-      setStatus("running");
 
-      cameraLoopRef.current = window.setTimeout(cameraLoop, 200);
+      setStatus("running");
     } catch (err) {
       console.error(err);
+
+      streamRef.current?.getTracks().forEach((track) => {
+        track.stop();
+      });
+
+      streamRef.current = null;
+
+      setCameraActive(false);
+
+      setStatus("error");
 
       setErrorMsg(
         err instanceof Error
           ? `เปิดกล้องไม่สำเร็จ: ${err.message}`
           : "เปิดกล้องไม่สำเร็จ ตรวจสอบสิทธิ์การเข้าถึงกล้องของเบราว์เซอร์",
       );
-
-      setStatus("error");
     }
-  }, [cameraLoop]);
+  }, []);
+
+  useEffect(() => {
+    if (!cameraActive) {
+      return;
+    }
+
+    const video = videoRef.current;
+
+    const stream = streamRef.current;
+
+    if (!video || !stream) {
+      return;
+    }
+
+    video.srcObject = stream;
+
+    video.muted = true;
+
+    video.playsInline = true;
+
+    video
+      .play()
+      .then(() => {
+        if (streamRef.current) {
+          cameraLoopRef.current = window.setTimeout(cameraLoop, 200);
+        }
+      })
+      .catch((err) => {
+        console.error("Video play failed:", err);
+
+        setErrorMsg(
+          "ไม่สามารถแสดงภาพจากกล้องได้ กรุณาตรวจสอบสิทธิ์กล้องของเบราว์เซอร์",
+        );
+
+        setStatus("error");
+      });
+
+    return () => {
+      if (cameraLoopRef.current !== null) {
+        window.clearTimeout(cameraLoopRef.current);
+        cameraLoopRef.current = null;
+      }
+    };
+  }, [cameraActive, cameraLoop]);
 
   useEffect(() => {
     if (mode === "image") {
       stopCamera();
     }
 
-    return () => stopCamera();
+    return () => {
+      stopCamera();
+    };
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
 
   const switchMode = (next: Mode) => {
+    if (next === mode) {
+      return;
+    }
+
     setDetections([]);
+
     setErrorMsg("");
+
     setStatus("idle");
+
     setPersonDescriptions({});
+
     setInferenceMs(null);
+
+    if (next === "image") {
+      stopCamera();
+    }
 
     setMode(next);
   };
@@ -477,12 +602,22 @@ export default function App() {
     async (det: Detection, index: number) => {
       const source = mode === "image" ? imgRef.current : videoRef.current;
 
-      if (!source) return;
+      if (!source) {
+        return;
+      }
 
       await analyzePerson(source, det, index);
     },
     [mode, analyzePerson],
   );
+
+  useEffect(() => {
+    return () => {
+      if (imageUrl) {
+        URL.revokeObjectURL(imageUrl);
+      }
+    };
+  }, [imageUrl]);
 
   const sortedDetections = detections
     .map((det, originalIndex) => ({
@@ -522,6 +657,7 @@ export default function App() {
   const maleCount = personResults.filter(
     ({ originalIndex }) => personDescriptions[originalIndex]?.gender === "male",
   ).length;
+
   const femaleCount = personResults.filter(
     ({ originalIndex }) =>
       personDescriptions[originalIndex]?.gender === "female",
@@ -531,10 +667,12 @@ export default function App() {
     ({ originalIndex }) =>
       personDescriptions[originalIndex]?.ageGroup === "teen",
   ).length;
+
   const adultCount = personResults.filter(
     ({ originalIndex }) =>
       personDescriptions[originalIndex]?.ageGroup === "adult",
   ).length;
+
   const elderlyCount = personResults.filter(
     ({ originalIndex }) =>
       personDescriptions[originalIndex]?.ageGroup === "elderly",
@@ -758,245 +896,271 @@ export default function App() {
           </div>
         </section>
 
-        <section className="grid gap-6 md:grid-cols-[2fr_1fr]">
-          <div className="rounded-lg border border-line bg-panel p-4">
-            {mode === "image" ? (
-              imageUrl ? (
-                <div className="relative">
-                  <img
-                    ref={imgRef}
-                    src={imageUrl}
-                    alt="uploaded"
-                    className={
-                      status === "done" ? "hidden" : "w-full rounded-md"
-                    }
-                  />
+        <section className="grid items-start gap-6 md:grid-cols-[2fr_1fr]">
+          <div className="min-w-0" ref={leftPanelRef}>
+            <div className="flex w-full flex-col overflow-hidden rounded-lg border border-line bg-panel p-4">
+              {mode === "image" ? (
+                imageUrl ? (
+                  <div className="relative">
+                    <img
+                      ref={imgRef}
+                      src={imageUrl}
+                      alt="uploaded"
+                      className={
+                        status === "done" ? "hidden" : "block w-full rounded-md"
+                      }
+                    />
 
-                  <canvas
-                    ref={imageCanvasRef}
-                    className={
-                      status === "done" ? "w-full rounded-md" : "hidden"
-                    }
-                  />
-                </div>
-              ) : (
-                <div className="flex h-64 items-center justify-center rounded-md border border-dashed border-line text-sm text-slate-500">
-                  ยังไม่ได้เลือกรูปภาพ
-                </div>
-              )
-            ) : (
-              <div className="relative">
-                <video
-                  ref={videoRef}
-                  playsInline
-                  muted
-                  className={
-                    cameraActive ? "w-full rounded-md scale-x-[-1]" : "hidden"
-                  }
-                />
-
-                {cameraActive && (
-                  <canvas
-                    ref={overlayCanvasRef}
-                    className="pointer-events-none absolute inset-0 h-full w-full rounded-md"
-                  />
-                )}
-
-                {!cameraActive && (
-                  <div className="flex h-64 items-center justify-center rounded-md border border-dashed border-line text-sm text-slate-500">
-                    กดปุ่ม "เปิดกล้อง" เพื่อเริ่มตรวจจับแบบเรียลไทม์
+                    <canvas
+                      ref={imageCanvasRef}
+                      className={
+                        status === "done" ? "block w-full rounded-md" : "hidden"
+                      }
+                    />
                   </div>
-                )}
-              </div>
-            )}
+                ) : (
+                  <div className="flex h-64 items-center justify-center rounded-md border border-dashed border-line text-sm text-slate-500">
+                    ยังไม่ได้เลือกรูปภาพ
+                  </div>
+                )
+              ) : (
+                <div className="relative w-full overflow-hidden rounded-md bg-black aspect-video">
+                  {cameraActive ? (
+                    <>
+                      <video
+                        ref={videoRef}
+                        playsInline
+                        muted
+                        autoPlay
+                        className="absolute inset-0 block h-full w-full object-contain scale-x-[-1]"
+                      />
+
+                      <canvas
+                        ref={overlayCanvasRef}
+                        className="pointer-events-none absolute inset-0 h-full w-full"
+                      />
+                    </>
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center border border-dashed border-line text-sm text-slate-500">
+                      กดปุ่ม "เปิดกล้อง" เพื่อเริ่มตรวจจับแบบเรียลไทม์
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
 
-          <div className="overflow-y-auto max-h-[50vh] rounded-lg border border-line bg-panel p-4">
-            <div className="w-full flex justify-between items-center mb-3 font-mono text-xs uppercase tracking-[0.15em] text-slate-400">
-              <div>ผลลัพธ์</div>
-              <div>
-                {analyzingCount > 0 && (
-                  <span>กำลังวิเคราะห์ {analyzingCount} คน...</span>
+          <div className="min-w-0">
+            <div
+              className="flex w-full flex-col overflow-y-auto rounded-lg border border-line bg-panel p-4"
+              style={
+                resultsPanelHeight
+                  ? {
+                      height: resultsPanelHeight,
+                      maxHeight: resultsPanelHeight,
+                    }
+                  : undefined
+              }
+            >
+              <div className="mb-3 flex w-full shrink-0 items-center justify-between font-mono text-xs uppercase tracking-[0.15em] text-slate-400">
+                <div>ผลลัพธ์</div>
+
+                <div>
+                  {analyzingCount > 0 && (
+                    <span>กำลังวิเคราะห์ {analyzingCount} คน...</span>
+                  )}
+                </div>
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+                {personResults.length > 0 && (
+                  <div className="mb-5 space-y-4">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="rounded-md border border-accent/20 bg-accent/5 p-3">
+                        <p className="text-[10px] text-slate-500">
+                          ชุดนักศึกษา
+                        </p>
+
+                        <p className="text-xl font-semibold text-accent">
+                          {studentCount}{" "}
+                          <span className="text-xs font-normal">คน</span>
+                        </p>
+                      </div>
+
+                      <div className="rounded-md border border-line bg-black/10 p-3">
+                        <p className="text-[10px] text-slate-500">ชุดทั่วไป</p>
+
+                        <p className="text-xl font-semibold text-slate-200">
+                          {generalCount}{" "}
+                          <span className="text-xs font-normal">คน</span>
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="rounded-md border border-line bg-panel p-3">
+                        <p className="mb-2 text-[10px] font-semibold text-slate-400">
+                          แยกตามเพศ
+                        </p>
+
+                        <div className="flex justify-between text-sm">
+                          <span className="text-slate-300">ผู้ชาย</span>
+                          <span className="font-semibold">{maleCount}</span>
+                        </div>
+
+                        <div className="mt-1 flex justify-between text-sm">
+                          <span className="text-slate-300">ผู้หญิง</span>
+                          <span className="font-semibold">{femaleCount}</span>
+                        </div>
+                      </div>
+
+                      <div className="rounded-md border border-line bg-panel p-3">
+                        <p className="mb-2 text-[10px] font-semibold text-slate-400">
+                          แยกตามช่วงวัย
+                        </p>
+
+                        <div className="flex justify-between text-sm">
+                          <span className="text-slate-300">วัยรุ่น/เรียน</span>
+                          <span className="font-semibold">{teenCount}</span>
+                        </div>
+
+                        <div className="mt-1 flex justify-between text-sm">
+                          <span className="text-slate-300">วัยผู้ใหญ่</span>
+                          <span className="font-semibold">{adultCount}</span>
+                        </div>
+
+                        <div className="mt-1 flex justify-between text-sm">
+                          <span className="text-slate-300">สูงวัย</span>
+                          <span className="font-semibold">{elderlyCount}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="col-span-2">
+                      <div className="mb-1 flex justify-between font-mono text-[10px] text-slate-500">
+                        <span>วิเคราะห์การแต่งกาย</span>
+
+                        <span>
+                          {analyzedCount}/{personResults.length}
+                        </span>
+                      </div>
+
+                      <div className="h-1 overflow-hidden rounded-full bg-white/5">
+                        <div
+                          className="h-full bg-accent transition-all duration-300"
+                          style={{
+                            width: `${
+                              personResults.length > 0
+                                ? (analyzedCount / personResults.length) * 100
+                                : 0
+                            }%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {detections.length === 0 ? (
+                  <p className="text-sm text-slate-500">ยังไม่มีผลการตรวจจับ</p>
+                ) : (
+                  <ul className="space-y-2">
+                    {sortedDetections.map(({ det, originalIndex }) => {
+                      const desc = personDescriptions[originalIndex];
+
+                      const isPerson = det.classId === PERSON_CLASS_ID;
+
+                      const attireLabel = getAttireLabel(desc?.attire);
+
+                      return (
+                        <li
+                          key={originalIndex}
+                          className="rounded-md border border-line px-3 py-2 text-sm"
+                        >
+                          <div className="flex items-center gap-2">
+                            <span
+                              className="h-2 w-2 shrink-0 rounded-full"
+                              style={{
+                                backgroundColor:
+                                  BOX_COLORS[det.classId % BOX_COLORS.length],
+                              }}
+                            />
+
+                            <span className="flex-1">{det.className}</span>
+
+                            <span className="font-mono text-xs text-slate-400">
+                              {(det.score * 100).toFixed(1)}%
+                            </span>
+
+                            {isPerson && (
+                              <button
+                                onClick={() =>
+                                  handleDescribePerson(det, originalIndex)
+                                }
+                                disabled={desc?.loading}
+                                className="shrink-0 rounded border border-line px-2 py-0.5 text-xs text-slate-300 transition hover:border-accent hover:text-accent disabled:cursor-wait disabled:opacity-50"
+                              >
+                                {desc?.loading
+                                  ? "กำลังวิเคราะห์..."
+                                  : "วิเคราะห์อีกครั้ง"}
+                              </button>
+                            )}
+                          </div>
+
+                          {isPerson && attireLabel && (
+                            <div className="mt-2">
+                              <span
+                                className={`inline-flex rounded-full border px-2 py-0.5 text-[10px] font-medium ${getAttireClass(
+                                  desc?.attire,
+                                )}`}
+                              >
+                                {attireLabel}
+                              </span>
+                            </div>
+                          )}
+
+                          {desc &&
+                            (desc.thumbnail ||
+                              desc.text ||
+                              desc.error ||
+                              desc.loading) && (
+                              <div className="mt-2 flex gap-3 border-t border-line pt-2">
+                                {desc.thumbnail && (
+                                  <img
+                                    src={desc.thumbnail}
+                                    alt={`${det.className} crop`}
+                                    className="h-16 w-16 shrink-0 rounded object-cover"
+                                  />
+                                )}
+
+                                <div className="min-w-0 flex-1">
+                                  {desc.loading && (
+                                    <p className="text-xs text-slate-500">
+                                      กำลังวิเคราะห์การแต่งกายด้วย Gemini...
+                                    </p>
+                                  )}
+
+                                  {desc.error && (
+                                    <p className="text-xs text-warn">
+                                      {desc.error}
+                                    </p>
+                                  )}
+
+                                  {desc.text && (
+                                    <p className="text-xs leading-relaxed text-slate-300">
+                                      {desc.text}
+                                    </p>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                        </li>
+                      );
+                    })}
+                  </ul>
                 )}
               </div>
             </div>
-
-            {personResults.length > 0 && (
-              <div className="mb-5 space-y-4">
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="rounded-md border border-accent/20 bg-accent/5 p-3">
-                    <p className="text-[10px] text-slate-500">ชุดนักศึกษา</p>
-                    <p className="text-xl font-semibold text-accent">
-                      {studentCount}{" "}
-                      <span className="text-xs font-normal">คน</span>
-                    </p>
-                  </div>
-                  <div className="rounded-md border border-line bg-black/10 p-3">
-                    <p className="text-[10px] text-slate-500">ชุดทั่วไป</p>
-                    <p className="text-xl font-semibold text-slate-200">
-                      {generalCount}{" "}
-                      <span className="text-xs font-normal">คน</span>
-                    </p>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="rounded-md border border-line bg-panel p-3">
-                    <p className="mb-2 text-[10px] font-semibold text-slate-400">
-                      แยกตามเพศ
-                    </p>
-                    <div className="flex justify-between text-sm">
-                      <span className="text-slate-300">ผู้ชาย</span>
-                      <span className="font-semibold">{maleCount}</span>
-                    </div>
-                    <div className="flex justify-between text-sm mt-1">
-                      <span className="text-slate-300">ผู้หญิง</span>
-                      <span className="font-semibold">{femaleCount}</span>
-                    </div>
-                  </div>
-
-                  <div className="rounded-md border border-line bg-panel p-3">
-                    <p className="mb-2 text-[10px] font-semibold text-slate-400">
-                      แยกตามช่วงวัย
-                    </p>
-                    <div className="flex justify-between text-sm">
-                      <span className="text-slate-300">วัยรุ่น/เรียน</span>
-                      <span className="font-semibold">{teenCount}</span>
-                    </div>
-                    <div className="flex justify-between text-sm mt-1">
-                      <span className="text-slate-300">วัยผู้ใหญ่</span>
-                      <span className="font-semibold">{adultCount}</span>
-                    </div>
-                    <div className="flex justify-between text-sm mt-1">
-                      <span className="text-slate-300">สูงวัย</span>
-                      <span className="font-semibold">{elderlyCount}</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="col-span-2">
-                  <div className="mb-1 flex justify-between font-mono text-[10px] text-slate-500">
-                    <span>วิเคราะห์การแต่งกาย</span>
-
-                    <span>
-                      {analyzedCount}/{personResults.length}
-                    </span>
-                  </div>
-
-                  <div className="h-1 overflow-hidden rounded-full bg-white/5">
-                    <div
-                      className="h-full bg-accent transition-all duration-300"
-                      style={{
-                        width: `${
-                          personResults.length > 0
-                            ? (analyzedCount / personResults.length) * 100
-                            : 0
-                        }%`,
-                      }}
-                    />
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {detections.length === 0 ? (
-              <p className="text-sm text-slate-500">ยังไม่มีผลการตรวจจับ</p>
-            ) : (
-              <ul className="space-y-2">
-                {sortedDetections.map(({ det, originalIndex }) => {
-                  const desc = personDescriptions[originalIndex];
-
-                  const isPerson = det.classId === PERSON_CLASS_ID;
-
-                  const attireLabel = getAttireLabel(desc?.attire);
-
-                  return (
-                    <li
-                      key={originalIndex}
-                      className="rounded-md border border-line px-3 py-2 text-sm"
-                    >
-                      <div className="flex items-center gap-2">
-                        <span
-                          className="h-2 w-2 shrink-0 rounded-full"
-                          style={{
-                            backgroundColor:
-                              BOX_COLORS[det.classId % BOX_COLORS.length],
-                          }}
-                        />
-
-                        <span className="flex-1">{det.className}</span>
-
-                        <span className="font-mono text-xs text-slate-400">
-                          {(det.score * 100).toFixed(1)}%
-                        </span>
-
-                        {isPerson && (
-                          <button
-                            onClick={() =>
-                              handleDescribePerson(det, originalIndex)
-                            }
-                            disabled={desc?.loading}
-                            className="shrink-0 rounded border border-line px-2 py-0.5 text-xs text-slate-300 transition hover:border-accent hover:text-accent disabled:cursor-wait disabled:opacity-50"
-                          >
-                            {desc?.loading
-                              ? "กำลังวิเคราะห์..."
-                              : "วิเคราะห์อีกครั้ง"}
-                          </button>
-                        )}
-                      </div>
-
-                      {isPerson && attireLabel && (
-                        <div className="mt-2">
-                          <span
-                            className={`inline-flex rounded-full border px-2 py-0.5 text-[10px] font-medium ${getAttireClass(
-                              desc?.attire,
-                            )}`}
-                          >
-                            {attireLabel}
-                          </span>
-                        </div>
-                      )}
-
-                      {desc &&
-                        (desc.thumbnail ||
-                          desc.text ||
-                          desc.error ||
-                          desc.loading) && (
-                          <div className="mt-2 flex gap-3 border-t border-line pt-2">
-                            {desc.thumbnail && (
-                              <img
-                                src={desc.thumbnail}
-                                alt={`${det.className} crop`}
-                                className="h-16 w-16 shrink-0 rounded object-cover"
-                              />
-                            )}
-
-                            <div className="min-w-0 flex-1">
-                              {desc.loading && (
-                                <p className="text-xs text-slate-500">
-                                  กำลังวิเคราะห์การแต่งกายด้วย Gemini...
-                                </p>
-                              )}
-
-                              {desc.error && (
-                                <p className="text-xs text-warn">
-                                  {desc.error}
-                                </p>
-                              )}
-
-                              {desc.text && (
-                                <p className="text-xs leading-relaxed text-slate-300">
-                                  {desc.text}
-                                </p>
-                              )}
-                            </div>
-                          </div>
-                        )}
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
           </div>
         </section>
       </main>
