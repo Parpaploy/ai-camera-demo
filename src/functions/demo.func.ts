@@ -1,5 +1,9 @@
 import { BOX_COLORS, GEMINI_MODEL } from "../constants/demo.const";
-import { AttireType } from "../interfaces/demo.interface";
+import {
+  AgeGroupType,
+  AttireType,
+  GenderType,
+} from "../interfaces/demo.interface";
 import { Detection } from "../utils/yolo";
 
 export function drawImageDetections(
@@ -74,15 +78,12 @@ export function cropDetectionToDataUrl(
   const safeY = Math.max(0, Math.min(y, sourceHeight - 1));
 
   const safeW = Math.max(1, Math.min(w, sourceWidth - safeX));
-
   const safeH = Math.max(1, Math.min(h, sourceHeight - safeY));
 
   const scale = Math.min(1, maxDim / Math.max(safeW, safeH));
 
   const canvas = document.createElement("canvas");
-
   canvas.width = Math.max(1, Math.round(safeW * scale));
-
   canvas.height = Math.max(1, Math.round(safeH * scale));
 
   const ctx = canvas.getContext("2d");
@@ -128,50 +129,33 @@ export async function describePersonImage(
 ): Promise<string> {
   const { mimeType, data } = parseDataUrl(dataUrl);
 
-  const url =
-    `https://generativelanguage.googleapis.com/v1beta/models/` +
-    `${GEMINI_MODEL}:generateContent`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
   const response = await fetch(url, {
     method: "POST",
-
     headers: {
       "Content-Type": "application/json",
       "x-goog-api-key": apiKey,
     },
-
     body: JSON.stringify({
       contents: [
         {
           parts: [
-            {
-              inlineData: {
-                mimeType,
-                data,
-              },
-            },
-
+            { inlineData: { mimeType, data } },
             {
               text:
-                "อธิบายลักษณะที่มองเห็นได้ของบุคคลในภาพ โดยประเมินช่วงวัยคร่าวๆ จากรูปลักษณ์ภายนอก (เช่น วัยรุ่น, วัยทำงาน, วัยกลางคน)" +
-                "และระบุสไตล์โดยรวมว่าดูเอนเอียงไปทางใด (เช่น สไตล์ผู้ชาย, สไตล์ผู้หญิง, หรือ Unisex)" +
-                "วิเคราะห์เฉพาะการแต่งกายที่มองเห็นได้ของบุคคลในภาพ " +
-                "ให้จำแนกว่าการแต่งกายมีลักษณะเป็นชุดนักศึกษาหรือเป็นเสื้อผ้าทั่วไป " +
-                "โดยพิจารณาจากเสื้อผ้าที่มองเห็นได้เท่านั้น เช่น เสื้อเชิ้ตสีขาว " +
-                "กระโปรงหรือกางเกงแบบสุภาพ และลักษณะของเครื่องแบบที่มองเห็นได้ " +
-                "หากลักษณะการแต่งกายเข้ากับชุดนักศึกษา ให้เริ่มคำตอบด้วย [STUDENT] " +
-                "หากเป็นเสื้อผ้าทั่วไป ให้เริ่มคำตอบด้วย [GENERAL] " +
-                "หากมองเห็นเสื้อผ้าไม่เพียงพอที่จะตัดสิน ให้เริ่มคำตอบด้วย [UNCERTAIN] " +
-                "จากนั้นอธิบายลักษณะเสื้อผ้า สี และประเภทของเสื้อผ้าที่มองเห็นได้สั้น ๆ " +
-                "ตอบภาษาไทยไม่เกิน 2 ประโยค",
+                "วิเคราะห์บุคคลในภาพและระบุข้อมูล 3 ส่วน โดยใช้ Tag ต่อไปนี้ไว้ที่จุดเริ่มต้นของข้อความเสมอ:\n" +
+                "1. การแต่งกาย: [STUDENT] สำหรับชุดนักศึกษา/เครื่องแบบ, [GENERAL] สำหรับชุดทั่วไป, [UNCERTAIN_ATTIRE] หากไม่แน่ใจ\n" +
+                "2. เพศ/สไตล์: [MALE] สำหรับผู้ชาย, [FEMALE] สำหรับผู้หญิง, [UNISEX] หากก้ำกึ่งหรือไม่แน่ใจ\n" +
+                "3. ช่วงวัย: [TEEN] สำหรับวัยรุ่น/วัยเรียน, [ADULT] สำหรับวัยทำงาน/ผู้ใหญ่, [ELDERLY] สำหรับวัยสูงอายุ, [UNCERTAIN_AGE] หากไม่แน่ใจ\n" +
+                'รูปแบบการตอบที่ต้องการ: "[ATTIRE_TAG][GENDER_TAG][AGE_TAG] คำอธิบายลักษณะเสื้อผ้าสั้นๆ..."\n' +
+                'ตัวอย่าง: "[STUDENT][FEMALE][TEEN] สวมเสื้อเชิ้ตสีขาวและกระโปรงสีดำ..."\n' +
+                "ตอบคำอธิบายเป็นภาษาไทย ไม่เกิน 2 ประโยค",
             },
           ],
         },
       ],
-
-      generationConfig: {
-        maxOutputTokens: 200,
-      },
+      generationConfig: { maxOutputTokens: 200 },
     }),
   });
 
@@ -182,7 +166,6 @@ export async function describePersonImage(
 
     try {
       const parsed = JSON.parse(body);
-
       message = parsed?.error?.message || parsed?.error?.status || body;
     } catch {
       // Keep raw body.
@@ -226,53 +209,14 @@ export async function describePersonImage(
   return text;
 }
 
-export function parseAttireType(text: string): AttireType {
-  const normalized = text.trim().toUpperCase();
-
-  if (normalized.startsWith("[STUDENT]")) {
-    return "student";
-  }
-
-  if (normalized.startsWith("[GENERAL]")) {
-    return "general";
-  }
-
-  if (normalized.startsWith("[UNCERTAIN]")) {
-    return "uncertain";
-  }
-
-  if (
-    normalized.includes("ชุดนักศึกษา") ||
-    normalized.includes("เครื่องแบบนักศึกษา")
-  ) {
-    return "student";
-  }
-
-  if (
-    normalized.includes("เสื้อผ้าทั่วไป") ||
-    normalized.includes("ชุดทั่วไป")
-  ) {
-    return "general";
-  }
-
-  return "uncertain";
-}
-
-export function cleanGeminiText(text: string): string {
-  return text.replace(/^\s*\[(STUDENT|GENERAL|UNCERTAIN)\]\s*/i, "").trim();
-}
-
 export function getAttireLabel(attire?: AttireType): string | null {
   switch (attire) {
     case "student":
       return "ชุดนักศึกษา";
-
     case "general":
       return "ชุดทั่วไป";
-
     case "uncertain":
       return "ไม่แน่ใจ";
-
     default:
       return null;
   }
@@ -282,14 +226,38 @@ export function getAttireClass(attire?: AttireType): string {
   switch (attire) {
     case "student":
       return "border-accent/30 bg-accent/10 text-accent";
-
     case "general":
       return "border-line bg-white/5 text-slate-400";
-
     case "uncertain":
       return "border-warn/30 bg-warn/10 text-warn";
-
     default:
       return "border-line bg-white/5 text-slate-500";
   }
+}
+
+export function parseAttireType(text: string): AttireType {
+  const normalized = text.toUpperCase();
+  if (normalized.includes("[STUDENT]")) return "student";
+  if (normalized.includes("[GENERAL]")) return "general";
+  return "uncertain";
+}
+
+export function parseGenderType(text: string): GenderType {
+  const normalized = text.toUpperCase();
+  if (normalized.includes("[MALE]")) return "male";
+  if (normalized.includes("[FEMALE]")) return "female";
+  if (normalized.includes("[UNISEX]")) return "unisex";
+  return "uncertain";
+}
+
+export function parseAgeGroupType(text: string): AgeGroupType {
+  const normalized = text.toUpperCase();
+  if (normalized.includes("[TEEN]")) return "teen";
+  if (normalized.includes("[ADULT]")) return "adult";
+  if (normalized.includes("[ELDERLY]")) return "elderly";
+  return "uncertain";
+}
+
+export function cleanGeminiText(text: string): string {
+  return text.replace(/\[.*?\]/g, "").trim();
 }

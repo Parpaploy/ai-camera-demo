@@ -20,7 +20,9 @@ import {
   drawImageDetections,
   getAttireClass,
   getAttireLabel,
+  parseAgeGroupType,
   parseAttireType,
+  parseGenderType,
 } from "./functions/demo.func";
 
 export default function App() {
@@ -156,19 +158,20 @@ export default function App() {
 
       try {
         const text = await describePersonImage(thumbnail, apiKey.trim());
-
         const attire = parseAttireType(text);
-
+        const gender = parseGenderType(text);
+        const ageGroup = parseAgeGroupType(text);
         const cleanText = cleanGeminiText(text);
 
         setPersonDescriptions((prev) => ({
           ...prev,
-
           [index]: {
             loading: false,
             thumbnail,
             text: cleanText,
             attire,
+            gender,
+            ageGroup,
           },
         }));
       } catch (err) {
@@ -516,6 +519,27 @@ export default function App() {
 
   const analyzedCount = studentCount + generalCount + uncertainCount;
 
+  const maleCount = personResults.filter(
+    ({ originalIndex }) => personDescriptions[originalIndex]?.gender === "male",
+  ).length;
+  const femaleCount = personResults.filter(
+    ({ originalIndex }) =>
+      personDescriptions[originalIndex]?.gender === "female",
+  ).length;
+
+  const teenCount = personResults.filter(
+    ({ originalIndex }) =>
+      personDescriptions[originalIndex]?.ageGroup === "teen",
+  ).length;
+  const adultCount = personResults.filter(
+    ({ originalIndex }) =>
+      personDescriptions[originalIndex]?.ageGroup === "adult",
+  ).length;
+  const elderlyCount = personResults.filter(
+    ({ originalIndex }) =>
+      personDescriptions[originalIndex]?.ageGroup === "elderly",
+  ).length;
+
   return (
     <div className="min-h-screen bg-ink text-slate-100">
       <header className="border-b border-line px-6 py-5">
@@ -788,53 +812,65 @@ export default function App() {
           </div>
 
           <div className="overflow-y-auto max-h-[50vh] rounded-lg border border-line bg-panel p-4">
-            <h2 className="mb-3 font-mono text-xs uppercase tracking-[0.15em] text-slate-400">
-              ผลลัพธ์
-            </h2>
+            <div className="w-full flex justify-between items-center mb-3 font-mono text-xs uppercase tracking-[0.15em] text-slate-400">
+              <div>ผลลัพธ์</div>
+              <div>
+                {analyzingCount > 0 && (
+                  <span>กำลังวิเคราะห์ {analyzingCount} คน...</span>
+                )}
+              </div>
+            </div>
 
             {personResults.length > 0 && (
-              <div className="mb-5 grid grid-cols-2 gap-2">
-                <div className="rounded-md border border-accent/20 bg-accent/5 p-3">
-                  <p className="text-xs text-slate-500">ชุดนักศึกษา</p>
-
-                  <p className="mt-1 text-2xl font-semibold text-accent">
-                    {studentCount}
-
-                    <span className="ml-1 text-xs font-normal text-slate-500">
-                      คน
-                    </span>
-                  </p>
+              <div className="mb-5 space-y-4">
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="rounded-md border border-accent/20 bg-accent/5 p-3">
+                    <p className="text-[10px] text-slate-500">ชุดนักศึกษา</p>
+                    <p className="text-xl font-semibold text-accent">
+                      {studentCount}{" "}
+                      <span className="text-xs font-normal">คน</span>
+                    </p>
+                  </div>
+                  <div className="rounded-md border border-line bg-black/10 p-3">
+                    <p className="text-[10px] text-slate-500">ชุดทั่วไป</p>
+                    <p className="text-xl font-semibold text-slate-200">
+                      {generalCount}{" "}
+                      <span className="text-xs font-normal">คน</span>
+                    </p>
+                  </div>
                 </div>
 
-                <div className="rounded-md border border-line bg-black/10 p-3">
-                  <p className="text-xs text-slate-500">ชุดทั่วไป</p>
-
-                  <p className="mt-1 text-2xl font-semibold text-slate-200">
-                    {generalCount}
-
-                    <span className="ml-1 text-xs font-normal text-slate-500">
-                      คน
-                    </span>
-                  </p>
-                </div>
-
-                <div className="col-span-2 rounded-md border border-warn/20 bg-warn/5 p-3">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-xs text-slate-500">ยังจำแนกไม่ได้</p>
-
-                      <p className="mt-1 text-lg font-semibold text-warn">
-                        {uncertainCount}
-
-                        <span className="ml-1 text-xs font-normal">คน</span>
-                      </p>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="rounded-md border border-line bg-panel p-3">
+                    <p className="mb-2 text-[10px] font-semibold text-slate-400">
+                      แยกตามเพศ
+                    </p>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-slate-300">ผู้ชาย</span>
+                      <span className="font-semibold">{maleCount}</span>
                     </div>
+                    <div className="flex justify-between text-sm mt-1">
+                      <span className="text-slate-300">ผู้หญิง</span>
+                      <span className="font-semibold">{femaleCount}</span>
+                    </div>
+                  </div>
 
-                    {analyzingCount > 0 && (
-                      <span className="text-xs text-slate-500">
-                        กำลังวิเคราะห์ {analyzingCount} คน...
-                      </span>
-                    )}
+                  <div className="rounded-md border border-line bg-panel p-3">
+                    <p className="mb-2 text-[10px] font-semibold text-slate-400">
+                      แยกตามช่วงวัย
+                    </p>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-slate-300">วัยรุ่น/เรียน</span>
+                      <span className="font-semibold">{teenCount}</span>
+                    </div>
+                    <div className="flex justify-between text-sm mt-1">
+                      <span className="text-slate-300">วัยผู้ใหญ่</span>
+                      <span className="font-semibold">{adultCount}</span>
+                    </div>
+                    <div className="flex justify-between text-sm mt-1">
+                      <span className="text-slate-300">สูงวัย</span>
+                      <span className="font-semibold">{elderlyCount}</span>
+                    </div>
                   </div>
                 </div>
 
