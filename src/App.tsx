@@ -26,6 +26,16 @@ import {
 } from "./functions/demo.func";
 
 export default function App() {
+  // ============================================================
+  // ENV API KEY
+  // ============================================================
+
+  const envApiKey = import.meta.env.VITE_GEMINI_API_KEY ?? "";
+
+  // ============================================================
+  // STATE
+  // ============================================================
+
   const [mode, setMode] = useState<Mode>("image");
 
   const [status, setStatus] = useState<Status>("idle");
@@ -46,15 +56,25 @@ export default function App() {
 
   const [showClassPicker, setShowClassPicker] = useState(false);
 
-  const [apiKey, setApiKey] = useState(
-    () => sessionStorage.getItem(SESSION_API_KEY) ?? "",
-  );
+  /**
+   * Priority:
+   * 1. sessionStorage
+   * 2. .env
+   * 3. empty
+   */
+  const [apiKey, setApiKey] = useState(() => {
+    return sessionStorage.getItem(SESSION_API_KEY) ?? envApiKey;
+  });
 
   const [showApiKeyInput, setShowApiKeyInput] = useState(false);
 
   const [personDescriptions, setPersonDescriptions] = useState<
     Record<number, PersonDescriptionState>
   >({});
+
+  // ============================================================
+  // REFS
+  // ============================================================
 
   const selectedClassesRef = useRef(selectedClasses);
 
@@ -86,6 +106,10 @@ export default function App() {
     number | undefined
   >(undefined);
 
+  // ============================================================
+  // SYNC RESULTS PANEL HEIGHT WITH LEFT PANEL
+  // ============================================================
+
   useEffect(() => {
     const el = leftPanelRef.current;
 
@@ -106,22 +130,33 @@ export default function App() {
     ro.observe(el);
 
     mq.addEventListener("change", updateHeight);
+
     window.addEventListener("resize", updateHeight);
 
     return () => {
       ro.disconnect();
+
       mq.removeEventListener("change", updateHeight);
+
       window.removeEventListener("resize", updateHeight);
     };
   }, [mode, imageUrl, cameraActive, status]);
 
+  // ============================================================
+  // SAVE API KEY TO SESSION STORAGE
+  // ============================================================
+
   useEffect(() => {
-    if (apiKey) {
-      sessionStorage.setItem(SESSION_API_KEY, apiKey);
+    if (apiKey.trim()) {
+      sessionStorage.setItem(SESSION_API_KEY, apiKey.trim());
     } else {
       sessionStorage.removeItem(SESSION_API_KEY);
     }
   }, [apiKey]);
+
+  // ============================================================
+  // CLASS SELECTION
+  // ============================================================
 
   const toggleClass = (classId: number) => {
     setSelectedClasses((prev) => {
@@ -145,13 +180,36 @@ export default function App() {
     setSelectedClasses(new Set());
   };
 
+  // ============================================================
+  // API KEY
+  // ============================================================
+
+  const handleUseEnvApiKey = () => {
+    if (!envApiKey.trim()) {
+      setErrorMsg("ไม่พบ VITE_GEMINI_API_KEY ในไฟล์ .env");
+      return;
+    }
+
+    setApiKey(envApiKey.trim());
+
+    setErrorMsg("");
+
+    setShowApiKeyInput(false);
+  };
+
+  // ============================================================
+  // ANALYZE PERSON
+  // ============================================================
+
   const analyzePerson = useCallback(
     async (
       source: HTMLImageElement | HTMLVideoElement,
       det: Detection,
       index: number,
     ) => {
-      if (!apiKey.trim()) {
+      const currentApiKey = apiKey.trim();
+
+      if (!currentApiKey) {
         setShowApiKeyInput(true);
 
         setPersonDescriptions((prev) => ({
@@ -192,11 +250,14 @@ export default function App() {
       }));
 
       try {
-        const text = await describePersonImage(thumbnail, apiKey.trim());
+        const text = await describePersonImage(thumbnail, currentApiKey);
 
         const attire = parseAttireType(text);
+
         const gender = parseGenderType(text);
+
         const ageGroup = parseAgeGroupType(text);
+
         const cleanText = cleanGeminiText(text);
 
         setPersonDescriptions((prev) => ({
@@ -228,6 +289,10 @@ export default function App() {
     },
     [apiKey],
   );
+
+  // ============================================================
+  // ANALYZE ALL PEOPLE
+  // ============================================================
 
   const analyzeAllPeople = useCallback(
     async (
@@ -262,11 +327,16 @@ export default function App() {
         }
       } finally {
         geminiRunningRef.current = false;
+
         geminiLastRunRef.current = performance.now();
       }
     },
     [apiKey, analyzePerson],
   );
+
+  // ============================================================
+  // HANDLE IMAGE
+  // ============================================================
 
   const handleFile = useCallback((file: File | undefined) => {
     if (!file) return;
@@ -282,11 +352,19 @@ export default function App() {
     });
 
     setDetections([]);
+
     setPersonDescriptions({});
+
     setStatus("idle");
+
     setErrorMsg("");
+
     setInferenceMs(null);
   }, []);
+
+  // ============================================================
+  // IMAGE DETECTION
+  // ============================================================
 
   const runImageDetection = useCallback(async () => {
     const img = imgRef.current;
@@ -296,8 +374,11 @@ export default function App() {
     if (!img || !canvas) return;
 
     setErrorMsg("");
+
     setDetections([]);
+
     setPersonDescriptions({});
+
     setStatus("loading-model");
 
     try {
@@ -333,9 +414,14 @@ export default function App() {
     }
   }, [analyzeAllPeople]);
 
+  // ============================================================
+  // STOP CAMERA
+  // ============================================================
+
   const stopCamera = useCallback(() => {
     if (cameraLoopRef.current !== null) {
       window.clearTimeout(cameraLoopRef.current);
+
       cameraLoopRef.current = null;
     }
 
@@ -345,6 +431,7 @@ export default function App() {
 
     if (video) {
       video.pause();
+
       video.srcObject = null;
     }
 
@@ -370,9 +457,14 @@ export default function App() {
       ctx?.clearRect(0, 0, overlay.width, overlay.height);
 
       overlay.width = 0;
+
       overlay.height = 0;
     }
   }, []);
+
+  // ============================================================
+  // CAMERA LOOP
+  // ============================================================
 
   const cameraLoop = useCallback(async () => {
     const video = videoRef.current;
@@ -425,6 +517,7 @@ export default function App() {
         overlay.height !== video.videoHeight
       ) {
         overlay.width = video.videoWidth;
+
         overlay.height = video.videoHeight;
       }
 
@@ -469,6 +562,10 @@ export default function App() {
       }
     }
   }, [analyzeAllPeople]);
+
+  // ============================================================
+  // START CAMERA
+  // ============================================================
 
   const startCamera = useCallback(async () => {
     setErrorMsg("");
@@ -520,6 +617,10 @@ export default function App() {
     }
   }, []);
 
+  // ============================================================
+  // CONNECT CAMERA VIDEO
+  // ============================================================
+
   useEffect(() => {
     if (!cameraActive) {
       return;
@@ -559,10 +660,15 @@ export default function App() {
     return () => {
       if (cameraLoopRef.current !== null) {
         window.clearTimeout(cameraLoopRef.current);
+
         cameraLoopRef.current = null;
       }
     };
   }, [cameraActive, cameraLoop]);
+
+  // ============================================================
+  // MODE CLEANUP
+  // ============================================================
 
   useEffect(() => {
     if (mode === "image") {
@@ -575,6 +681,10 @@ export default function App() {
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
+
+  // ============================================================
+  // SWITCH MODE
+  // ============================================================
 
   const switchMode = (next: Mode) => {
     if (next === mode) {
@@ -598,6 +708,10 @@ export default function App() {
     setMode(next);
   };
 
+  // ============================================================
+  // MANUAL PERSON ANALYSIS
+  // ============================================================
+
   const handleDescribePerson = useCallback(
     async (det: Detection, index: number) => {
       const source = mode === "image" ? imgRef.current : videoRef.current;
@@ -611,6 +725,10 @@ export default function App() {
     [mode, analyzePerson],
   );
 
+  // ============================================================
+  // CLEAN IMAGE URL
+  // ============================================================
+
   useEffect(() => {
     return () => {
       if (imageUrl) {
@@ -618,6 +736,10 @@ export default function App() {
       }
     };
   }, [imageUrl]);
+
+  // ============================================================
+  // RESULTS
+  // ============================================================
 
   const sortedDetections = detections
     .map((det, originalIndex) => ({
@@ -678,8 +800,16 @@ export default function App() {
       personDescriptions[originalIndex]?.ageGroup === "elderly",
   ).length;
 
+  // ============================================================
+  // UI
+  // ============================================================
+
   return (
     <div className="min-h-screen bg-ink text-slate-100">
+      {/* ======================================================
+          HEADER
+      ======================================================= */}
+
       <header className="border-b border-line px-6 py-5">
         <div className="mx-auto flex max-w-5xl items-center justify-between">
           <div>
@@ -701,6 +831,10 @@ export default function App() {
           </button>
         </div>
 
+        {/* ====================================================
+            API KEY SETTINGS
+        ===================================================== */}
+
         {showApiKeyInput && (
           <div className="mx-auto mt-3 flex max-w-5xl flex-wrap items-center gap-2">
             <input
@@ -711,14 +845,44 @@ export default function App() {
               className="w-72 rounded-md border border-line bg-panel px-3 py-1.5 font-mono text-xs text-slate-200 outline-none focus:border-accent"
             />
 
+            <button
+              type="button"
+              onClick={handleUseEnvApiKey}
+              disabled={!envApiKey}
+              className="rounded-md border border-line px-3 py-1.5 text-xs text-slate-300 transition hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              ใช้ API key จาก .env
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setApiKey("");
+                sessionStorage.removeItem(SESSION_API_KEY);
+              }}
+              className="rounded-md border border-line px-3 py-1.5 text-xs text-slate-400 transition hover:border-warn hover:text-warn"
+            >
+              ล้าง
+            </button>
+
             <span className="text-xs text-slate-500">
-              เก็บไว้ใน sessionStorage ของเบราว์เซอร์นี้เท่านั้น
+              {envApiKey
+                ? "มี API key จาก .env · ค่าที่กรอกเองจะ override"
+                : "ไม่พบ API key ใน .env · กรุณากรอกเอง"}
             </span>
           </div>
         )}
       </header>
 
+      {/* ======================================================
+          MAIN
+      ======================================================= */}
+
       <main className="mx-auto max-w-5xl px-6 py-8">
+        {/* ====================================================
+            MODE SWITCH
+        ===================================================== */}
+
         <div className="mb-6 inline-flex rounded-md border border-line bg-panel p-1">
           <button
             onClick={() => switchMode("image")}
@@ -742,6 +906,10 @@ export default function App() {
             กล้องสด
           </button>
         </div>
+
+        {/* ====================================================
+            CONTROL PANEL
+        ===================================================== */}
 
         <section className="mb-6 rounded-lg border border-line bg-panel p-5">
           {mode === "image" ? (
@@ -819,6 +987,10 @@ export default function App() {
             </div>
           )}
 
+          {/* ==================================================
+              ERROR
+          =================================================== */}
+
           {errorMsg && (
             <div className="mt-4 rounded-md border border-warn/40 bg-warn/10 px-4 py-3 text-sm text-warn">
               {errorMsg}
@@ -829,6 +1001,10 @@ export default function App() {
               </p>
             </div>
           )}
+
+          {/* ==================================================
+              CLASS PICKER
+          =================================================== */}
 
           <div className="mt-4 border-t border-line pt-4">
             <button
@@ -896,7 +1072,15 @@ export default function App() {
           </div>
         </section>
 
+        {/* ====================================================
+            CAMERA / RESULTS
+        ===================================================== */}
+
         <section className="grid items-start gap-6 md:grid-cols-[2fr_1fr]">
+          {/* ==================================================
+              LEFT PANEL
+          =================================================== */}
+
           <div className="min-w-0" ref={leftPanelRef}>
             <div className="flex w-full flex-col overflow-hidden rounded-lg border border-line bg-panel p-4">
               {mode === "image" ? (
@@ -924,7 +1108,7 @@ export default function App() {
                   </div>
                 )
               ) : (
-                <div className="relative w-full overflow-hidden rounded-md bg-black aspect-video">
+                <div className="relative aspect-video w-full overflow-hidden rounded-md bg-black">
                   {cameraActive ? (
                     <>
                       <video
@@ -932,7 +1116,7 @@ export default function App() {
                         playsInline
                         muted
                         autoPlay
-                        className="absolute inset-0 block h-full w-full object-contain scale-x-[-1]"
+                        className="absolute inset-0 block h-full w-full scale-x-[-1] object-contain"
                       />
 
                       <canvas
@@ -949,6 +1133,10 @@ export default function App() {
               )}
             </div>
           </div>
+
+          {/* ==================================================
+              RESULTS PANEL
+          =================================================== */}
 
           <div className="min-w-0">
             <div
@@ -973,6 +1161,10 @@ export default function App() {
               </div>
 
               <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+                {/* ============================================
+                    SUMMARY
+                ============================================= */}
+
                 {personResults.length > 0 && (
                   <div className="mb-5 space-y-4">
                     <div className="grid grid-cols-2 gap-2">
@@ -997,6 +1189,10 @@ export default function App() {
                       </div>
                     </div>
 
+                    {/* ========================================
+                        GENDER / AGE
+                    ========================================= */}
+
                     <div className="grid grid-cols-2 gap-2">
                       <div className="rounded-md border border-line bg-panel p-3">
                         <p className="mb-2 text-[10px] font-semibold text-slate-400">
@@ -1005,11 +1201,13 @@ export default function App() {
 
                         <div className="flex justify-between text-sm">
                           <span className="text-slate-300">ผู้ชาย</span>
+
                           <span className="font-semibold">{maleCount}</span>
                         </div>
 
                         <div className="mt-1 flex justify-between text-sm">
                           <span className="text-slate-300">ผู้หญิง</span>
+
                           <span className="font-semibold">{femaleCount}</span>
                         </div>
                       </div>
@@ -1021,20 +1219,27 @@ export default function App() {
 
                         <div className="flex justify-between text-sm">
                           <span className="text-slate-300">วัยรุ่น/เรียน</span>
+
                           <span className="font-semibold">{teenCount}</span>
                         </div>
 
                         <div className="mt-1 flex justify-between text-sm">
                           <span className="text-slate-300">วัยผู้ใหญ่</span>
+
                           <span className="font-semibold">{adultCount}</span>
                         </div>
 
                         <div className="mt-1 flex justify-between text-sm">
                           <span className="text-slate-300">สูงวัย</span>
+
                           <span className="font-semibold">{elderlyCount}</span>
                         </div>
                       </div>
                     </div>
+
+                    {/* ========================================
+                        PROGRESS
+                    ========================================= */}
 
                     <div className="col-span-2">
                       <div className="mb-1 flex justify-between font-mono text-[10px] text-slate-500">
@@ -1060,6 +1265,10 @@ export default function App() {
                     </div>
                   </div>
                 )}
+
+                {/* ============================================
+                    DETECTION RESULTS
+                ============================================= */}
 
                 {detections.length === 0 ? (
                   <p className="text-sm text-slate-500">ยังไม่มีผลการตรวจจับ</p>
