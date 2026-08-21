@@ -15,3 +15,9 @@ export type PersonDescriptionState = {
   gender?: GenderType;
   ageGroup?: AgeGroupType;
 };
+
+export interface ModelOption {
+  label: string;
+  url: string;
+  description: string;
+}

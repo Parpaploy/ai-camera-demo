@@ -26,33 +26,29 @@ export function drawImageDetections(
 export function drawBoxes(
   ctx: CanvasRenderingContext2D,
   refWidth: number,
-  dets: Detection[],
+  dets: (Detection & { trackId?: number })[],
 ) {
   dets.forEach((det) => {
     const color = BOX_COLORS[det.classId % BOX_COLORS.length];
-
     const [x, y, w, h] = det.box;
 
     ctx.strokeStyle = color;
     ctx.lineWidth = Math.max(2, refWidth / 400);
-
     ctx.strokeRect(x, y, w, h);
 
-    const label = `${det.className} ${(det.score * 100).toFixed(0)}%`;
+    const idPrefix = det.trackId !== undefined ? `#${det.trackId} ` : "";
+    const label = `${idPrefix}${det.className} ${(det.score * 100).toFixed(0)}%`;
 
     const fontSize = Math.max(14, refWidth / 60);
-
     ctx.font = `${fontSize}px Inter, sans-serif`;
 
     const textWidth = ctx.measureText(label).width;
     const textHeight = fontSize * 1.4;
 
     ctx.fillStyle = color;
-
     ctx.fillRect(x, Math.max(0, y - textHeight), textWidth + 10, textHeight);
 
     ctx.fillStyle = "#12151a";
-
     ctx.fillText(label, x + 5, Math.max(textHeight - 4, y - 5));
   });
 }
