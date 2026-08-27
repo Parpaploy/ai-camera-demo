@@ -232,7 +232,7 @@ export default function App() {
       source: HTMLImageElement | HTMLVideoElement,
       results: TrackedDetection[],
     ) => {
-      const people = results.filter((det) => det.classId === PERSON_CLASS_ID);
+      const people = results.filter((det) => det.classId === PERSON_CLASS_ID());
       if (people.length === 0) return;
 
       if (!apiKey.trim()) {
@@ -552,7 +552,7 @@ export default function App() {
   const sortedDetections = [...detections].sort((a, b) => b.score - a.score);
 
   const personResults = detections.filter(
-    (det) => det.classId === PERSON_CLASS_ID,
+    (det) => det.classId === PERSON_CLASS_ID(),
   );
 
   const studentCount = personResults.filter(
@@ -1057,7 +1057,7 @@ export default function App() {
                   <ul className="space-y-2">
                     {sortedDetections.map((det) => {
                       const desc = personDescriptions[det.trackId];
-                      const isPerson = det.classId === PERSON_CLASS_ID;
+                      const isPerson = det.classId === PERSON_CLASS_ID();
                       const attireLabel = getAttireLabel(desc?.attire);
 
                       return (

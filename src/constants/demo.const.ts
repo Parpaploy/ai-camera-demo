@@ -18,7 +18,10 @@ export const CAMERA_DETECT_INTERVAL_MS = 400;
 
 export const CAMERA_GEMINI_INTERVAL_MS = 5000;
 
-export const PERSON_CLASS_ID = COCO_CLASSES.indexOf("person");
+export const PERSON_CLASS_ID = () => {
+  // console.log(COCO_CLASSES);
+  return COCO_CLASSES.indexOf("person");
+};
 
 export const SESSION_API_KEY = "yolo-demo-gemini-key";
 
