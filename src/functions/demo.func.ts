@@ -1,6 +1,7 @@
 import { BOX_COLORS, GEMINI_MODEL } from "../constants/demo.const";
 import {
   AgeGroupType,
+  AttireDetectionMode,
   AttireType,
   GenderType,
 } from "../interfaces/demo.interface";
@@ -119,9 +120,34 @@ export function parseDataUrl(dataUrl: string): {
   };
 }
 
+function buildAttirePrompt(mode: AttireDetectionMode): string {
+  const attireInstruction =
+    mode === "medical"
+      ? "1. การแต่งกาย: [TARGET] หากสวมชุดบุคลากรทางการแพทย์ เช่น เสื้อสครับ (scrubs) ชุดหมอ ชุดพยาบาล หรือชุดพาราเมดิก/เจ้าหน้าที่กู้ชีพ " +
+        "(ชุดประเภทนี้อาจเป็นสีอะไรก็ได้ ไม่จำเป็นต้องเป็นสีกรมท่า และมักมีลักษณะ เช่น คอวี กระเป๋าหน้าอก ตราสัญลักษณ์โรงพยาบาล/หน่วยงาน ป้ายชื่อ/ตำแหน่งงาน หรือแถบสะท้อนแสง), " +
+        "[OTHER] สำหรับชุดทั่วไปที่ไม่ใช่ชุดบุคลากรทางการแพทย์, [UNCERTAIN_ATTIRE] หากไม่แน่ใจ\n"
+      : "1. การแต่งกาย: [TARGET] สำหรับชุดนักศึกษา/เครื่องแบบนักเรียน, [OTHER] สำหรับชุดทั่วไป, [UNCERTAIN_ATTIRE] หากไม่แน่ใจ\n";
+
+  const example =
+    mode === "medical"
+      ? 'ตัวอย่าง: "[TARGET][FEMALE][ADULT] สวมชุดสครับสีเขียวมีป้ายชื่อโรงพยาบาลติดที่อก..."\n'
+      : 'ตัวอย่าง: "[TARGET][FEMALE][TEEN] สวมเสื้อเชิ้ตสีขาวและกระโปรงสีดำ..."\n';
+
+  return (
+    "วิเคราะห์บุคคลในภาพและระบุข้อมูล 3 ส่วน โดยใช้ Tag ต่อไปนี้ไว้ที่จุดเริ่มต้นของข้อความเสมอ:\n" +
+    attireInstruction +
+    "2. เพศ/สไตล์: [MALE] สำหรับผู้ชาย, [FEMALE] สำหรับผู้หญิง, [UNISEX] หากก้ำกึ่งหรือไม่แน่ใจ\n" +
+    "3. ช่วงวัย: [TEEN] สำหรับวัยรุ่น/วัยเรียน, [ADULT] สำหรับวัยทำงาน/ผู้ใหญ่, [ELDERLY] สำหรับวัยสูงอายุ, [UNCERTAIN_AGE] หากไม่แน่ใจ\n" +
+    'รูปแบบการตอบที่ต้องการ: "[ATTIRE_TAG][GENDER_TAG][AGE_TAG] คำอธิบายลักษณะเสื้อผ้าสั้นๆ..."\n' +
+    example +
+    "ตอบคำอธิบายเป็นภาษาไทย ไม่เกิน 2 ประโยค"
+  );
+}
+
 export async function describePersonImage(
   dataUrl: string,
   apiKey: string,
+  mode: AttireDetectionMode = "student",
 ): Promise<string> {
   const { mimeType, data } = parseDataUrl(dataUrl);
 
@@ -138,16 +164,7 @@ export async function describePersonImage(
         {
           parts: [
             { inlineData: { mimeType, data } },
-            {
-              text:
-                "วิเคราะห์บุคคลในภาพและระบุข้อมูล 3 ส่วน โดยใช้ Tag ต่อไปนี้ไว้ที่จุดเริ่มต้นของข้อความเสมอ:\n" +
-                "1. การแต่งกาย: [STUDENT] สำหรับชุดนักศึกษา/เครื่องแบบ, [GENERAL] สำหรับชุดทั่วไป, [UNCERTAIN_ATTIRE] หากไม่แน่ใจ\n" +
-                "2. เพศ/สไตล์: [MALE] สำหรับผู้ชาย, [FEMALE] สำหรับผู้หญิง, [UNISEX] หากก้ำกึ่งหรือไม่แน่ใจ\n" +
-                "3. ช่วงวัย: [TEEN] สำหรับวัยรุ่น/วัยเรียน, [ADULT] สำหรับวัยทำงาน/ผู้ใหญ่, [ELDERLY] สำหรับวัยสูงอายุ, [UNCERTAIN_AGE] หากไม่แน่ใจ\n" +
-                'รูปแบบการตอบที่ต้องการ: "[ATTIRE_TAG][GENDER_TAG][AGE_TAG] คำอธิบายลักษณะเสื้อผ้าสั้นๆ..."\n' +
-                'ตัวอย่าง: "[STUDENT][FEMALE][TEEN] สวมเสื้อเชิ้ตสีขาวและกระโปรงสีดำ..."\n' +
-                "ตอบคำอธิบายเป็นภาษาไทย ไม่เกิน 2 ประโยค",
-            },
+            { text: buildAttirePrompt(mode) },
           ],
         },
       ],
@@ -205,11 +222,14 @@ export async function describePersonImage(
   return text;
 }
 
-export function getAttireLabel(attire?: AttireType): string | null {
+export function getAttireLabel(
+  attire?: AttireType,
+  mode: AttireDetectionMode = "student",
+): string | null {
   switch (attire) {
-    case "student":
-      return "ชุดนักศึกษา";
-    case "general":
+    case "target":
+      return mode === "medical" ? "บุคลากรทางการแพทย์" : "ชุดนักศึกษา";
+    case "other":
       return "ชุดทั่วไป";
     case "uncertain":
       return "ไม่แน่ใจ";
@@ -220,9 +240,9 @@ export function getAttireLabel(attire?: AttireType): string | null {
 
 export function getAttireClass(attire?: AttireType): string {
   switch (attire) {
-    case "student":
+    case "target":
       return "border-accent/30 bg-accent/10 text-accent";
-    case "general":
+    case "other":
       return "border-line bg-white/5 text-slate-400";
     case "uncertain":
       return "border-warn/30 bg-warn/10 text-warn";
@@ -233,8 +253,8 @@ export function getAttireClass(attire?: AttireType): string {
 
 export function parseAttireType(text: string): AttireType {
   const normalized = text.toUpperCase();
-  if (normalized.includes("[STUDENT]")) return "student";
-  if (normalized.includes("[GENERAL]")) return "general";
+  if (normalized.includes("[TARGET]")) return "target";
+  if (normalized.includes("[OTHER]")) return "other";
   return "uncertain";
 }
 

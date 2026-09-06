@@ -1,0 +1,15 @@
+{
+  "projects": {
+    "default": "the-demo-center"
+  },
+  "targets": {
+    "the-demo-center": {
+      "hosting": {
+        "ai-camera": [
+          "ai-cam-demo"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}

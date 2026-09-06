@@ -1,4 +1,4 @@
-import { ModelOption } from "../interfaces/demo.interface";
+import { AttireModeOption, ModelOption } from "../interfaces/demo.interface";
 import { COCO_CLASSES } from "../utils/yolo";
 
 export const BOX_COLORS = [
@@ -19,7 +19,6 @@ export const CAMERA_DETECT_INTERVAL_MS = 400;
 export const CAMERA_GEMINI_INTERVAL_MS = 5000;
 
 export const PERSON_CLASS_ID = () => {
-  // console.log(COCO_CLASSES);
   return COCO_CLASSES.indexOf("person");
 };
 
@@ -49,3 +48,19 @@ export const DEFAULT_MODEL_URL = MODEL_OPTIONS[0].url;
 
 export const CONF_THRESHOLD_RANGE = { min: 0.1, max: 0.9, step: 0.05 };
 export const IOU_THRESHOLD_RANGE = { min: 0.1, max: 0.9, step: 0.05 };
+
+export const ATTIRE_DETECTION_MODES: AttireModeOption[] = [
+  {
+    id: "student",
+    label: "ชุดนักศึกษา",
+    description: "ตรวจจับผู้ที่สวมชุดนักศึกษา / เครื่องแบบนักเรียน",
+  },
+  {
+    id: "medical",
+    label: "บุคลากรทางการแพทย์",
+    description:
+      "ตรวจจับผู้ที่สวมชุดบุคลากรทางการแพทย์ เช่น เสื้อสครับของหมอ พยาบาล หรือพาราเมดิก ได้ทุกสี",
+  },
+];
+
+export const DEFAULT_ATTIRE_MODE = ATTIRE_DETECTION_MODES[0].id;

@@ -2,15 +2,18 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { COCO_CLASSES, detectObjects } from "./utils/yolo";
 import { IouTracker, type TrackedDetection } from "./utils/tracker";
 import {
+  AttireDetectionMode,
   Mode,
   PersonDescriptionState,
   Status,
 } from "./interfaces/demo.interface";
 import {
+  ATTIRE_DETECTION_MODES,
   BOX_COLORS,
   CAMERA_DETECT_INTERVAL_MS,
   CAMERA_GEMINI_INTERVAL_MS,
   CONF_THRESHOLD_RANGE,
+  DEFAULT_ATTIRE_MODE,
   DEFAULT_CONF_THRESHOLD,
   DEFAULT_IOU_THRESHOLD,
   DEFAULT_MODEL_URL,
@@ -43,6 +46,9 @@ export default function App() {
   const [inferenceMs, setInferenceMs] = useState<number | null>(null);
   const [cameraActive, setCameraActive] = useState(false);
 
+  const [attireMode, setAttireMode] =
+    useState<AttireDetectionMode>(DEFAULT_ATTIRE_MODE);
+
   const [selectedClasses, setSelectedClasses] = useState<Set<number>>(
     () => new Set([COCO_CLASSES.indexOf("person")]),
   );
@@ -68,6 +74,7 @@ export default function App() {
   const confThresholdRef = useRef(confThreshold);
   const iouThresholdRef = useRef(iouThreshold);
   const modelUrlRef = useRef(modelUrl);
+  const attireModeRef = useRef(attireMode);
 
   const imgRef = useRef<HTMLImageElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -87,6 +94,7 @@ export default function App() {
   confThresholdRef.current = confThreshold;
   iouThresholdRef.current = iouThreshold;
   modelUrlRef.current = modelUrl;
+  attireModeRef.current = attireMode;
 
   const [resultsPanelHeight, setResultsPanelHeight] = useState<
     number | undefined
@@ -125,6 +133,11 @@ export default function App() {
       sessionStorage.removeItem(SESSION_API_KEY);
     }
   }, [apiKey]);
+
+  useEffect(() => {
+    setPersonDescriptions({});
+    trackerRef.current.reset();
+  }, [attireMode]);
 
   const toggleClass = (classId: number) => {
     setSelectedClasses((prev) => {
@@ -190,7 +203,11 @@ export default function App() {
       }));
 
       try {
-        const text = await describePersonImage(thumbnail, currentApiKey);
+        const text = await describePersonImage(
+          thumbnail,
+          currentApiKey,
+          attireModeRef.current,
+        );
         const attire = parseAttireType(text);
         const gender = parseGenderType(text);
         const ageGroup = parseAgeGroupType(text);
@@ -555,12 +572,12 @@ export default function App() {
     (det) => det.classId === PERSON_CLASS_ID(),
   );
 
-  const studentCount = personResults.filter(
-    (det) => personDescriptions[det.trackId]?.attire === "student",
+  const targetCount = personResults.filter(
+    (det) => personDescriptions[det.trackId]?.attire === "target",
   ).length;
 
-  const generalCount = personResults.filter(
-    (det) => personDescriptions[det.trackId]?.attire === "general",
+  const otherCount = personResults.filter(
+    (det) => personDescriptions[det.trackId]?.attire === "other",
   ).length;
 
   const uncertainCount = personResults.filter(
@@ -571,7 +588,7 @@ export default function App() {
     (det) => personDescriptions[det.trackId]?.loading,
   ).length;
 
-  const analyzedCount = studentCount + generalCount + uncertainCount;
+  const analyzedCount = targetCount + otherCount + uncertainCount;
 
   const maleCount = personResults.filter(
     (det) => personDescriptions[det.trackId]?.gender === "male",
@@ -592,6 +609,10 @@ export default function App() {
   const elderlyCount = personResults.filter(
     (det) => personDescriptions[det.trackId]?.ageGroup === "elderly",
   ).length;
+
+  const targetLabel =
+    ATTIRE_DETECTION_MODES.find((m) => m.id === attireMode)?.label ??
+    "เป้าหมาย";
 
   return (
     <div className="min-h-screen bg-ink text-slate-100">
@@ -652,28 +673,50 @@ export default function App() {
       </header>
 
       <main className="mx-auto max-w-5xl px-6 py-8">
-        <div className="mb-6 inline-flex rounded-md border border-line bg-panel p-1">
-          <button
-            onClick={() => switchMode("image")}
-            className={`rounded px-4 py-1.5 text-sm font-medium transition ${
-              mode === "image"
-                ? "bg-accent text-ink"
-                : "text-slate-300 hover:text-white"
-            }`}
-          >
-            อัปโหลดรูปภาพ
-          </button>
-          <button
-            onClick={() => switchMode("camera")}
-            className={`rounded px-4 py-1.5 text-sm font-medium transition ${
-              mode === "camera"
-                ? "bg-accent text-ink"
-                : "text-slate-300 hover:text-white"
-            }`}
-          >
-            กล้องสด
-          </button>
+        <div className="mb-4 flex flex-wrap items-center gap-3">
+          <div className="inline-flex rounded-md border border-line bg-panel p-1">
+            <button
+              onClick={() => switchMode("image")}
+              className={`rounded px-4 py-1.5 text-sm font-medium transition ${
+                mode === "image"
+                  ? "bg-accent text-ink"
+                  : "text-slate-300 hover:text-white"
+              }`}
+            >
+              อัปโหลดรูปภาพ
+            </button>
+            <button
+              onClick={() => switchMode("camera")}
+              className={`rounded px-4 py-1.5 text-sm font-medium transition ${
+                mode === "camera"
+                  ? "bg-accent text-ink"
+                  : "text-slate-300 hover:text-white"
+              }`}
+            >
+              กล้องสด
+            </button>
+          </div>
+
+          <div className="inline-flex rounded-md border border-line bg-panel p-1">
+            {ATTIRE_DETECTION_MODES.map((opt) => (
+              <button
+                key={opt.id}
+                onClick={() => setAttireMode(opt.id)}
+                title={opt.description}
+                className={`rounded px-4 py-1.5 text-sm font-medium transition ${
+                  attireMode === opt.id
+                    ? "bg-accent text-ink"
+                    : "text-slate-300 hover:text-white"
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
         </div>
+        <p className="mb-6 text-xs text-slate-500">
+          {ATTIRE_DETECTION_MODES.find((m) => m.id === attireMode)?.description}
+        </p>
 
         <section className="mb-6 rounded-lg border border-line bg-panel p-5">
           {mode === "image" ? (
@@ -767,7 +810,6 @@ export default function App() {
             </div>
           )}
 
-          {/* --- ใหม่: model switcher --- */}
           <div className="mt-4 border-t border-line pt-4">
             <p className="mb-2 text-sm font-medium text-slate-300">
               โมเดล YOLO
@@ -795,7 +837,6 @@ export default function App() {
             </p>
           </div>
 
-          {/* --- ใหม่: threshold sliders --- */}
           <div className="mt-4 grid gap-4 border-t border-line pt-4 sm:grid-cols-2">
             <div>
               <div className="mb-1 flex items-center justify-between text-sm text-slate-300">
@@ -982,17 +1023,17 @@ export default function App() {
                     <div className="grid grid-cols-2 gap-2">
                       <div className="rounded-md border border-accent/20 bg-accent/5 p-3">
                         <p className="text-[10px] text-slate-500">
-                          ชุดนักศึกษา
+                          {targetLabel}
                         </p>
                         <p className="text-xl font-semibold text-accent">
-                          {studentCount}{" "}
+                          {targetCount}{" "}
                           <span className="text-xs font-normal">คน</span>
                         </p>
                       </div>
                       <div className="rounded-md border border-line bg-black/10 p-3">
                         <p className="text-[10px] text-slate-500">ชุดทั่วไป</p>
                         <p className="text-xl font-semibold text-slate-200">
-                          {generalCount}{" "}
+                          {otherCount}{" "}
                           <span className="text-xs font-normal">คน</span>
                         </p>
                       </div>
@@ -1058,7 +1099,10 @@ export default function App() {
                     {sortedDetections.map((det) => {
                       const desc = personDescriptions[det.trackId];
                       const isPerson = det.classId === PERSON_CLASS_ID();
-                      const attireLabel = getAttireLabel(desc?.attire);
+                      const attireLabel = getAttireLabel(
+                        desc?.attire,
+                        attireMode,
+                      );
 
                       return (
                         <li
