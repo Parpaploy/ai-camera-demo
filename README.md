@@ -70,6 +70,13 @@ npm run dev
 python3 scripts/rdk_mipi_bridge.py --width 1920 --height 1080 --fps 30
 ```
 
+ถ้า auto-detect เลือกช่องกล้องไม่ตรง ให้ระบุ `video_index` ตาม `mipi_host`
+ใน `/etc/board_config.json` เช่น:
+
+```bash
+python3 scripts/rdk_mipi_bridge.py --video-index 2 --width 1920 --height 1080 --fps 30
+```
+
 กล้องต้องเป็นรุ่นที่ RDK X5 และ SDK บนบอร์ดรองรับ ดูรายละเอียดที่
 [RDK X5 MIPI Camera API](https://developer.d-robotics.cc/rdk_x_doc/en/Basic_Application/multi_media_sp_dev_api/RDK_X5/pydev_multimedia_api_x5/object_camera)
 และ [ตัวอย่างแสดงกล้องผ่านเว็บ](https://developer.d-robotics.cc/rdk_doc/en/Basic_Application/pydev_demo_sample/RDK_X5/web_display_camera_sample/)

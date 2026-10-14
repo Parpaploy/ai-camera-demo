@@ -17,11 +17,19 @@ DEFAULT_WEB_ROOT = PROJECT_ROOT / "dist" / "public"
 
 
 class MipiCameraFeed:
-    def __init__(self, width: int, height: int, fps: int, jpeg_quality: int) -> None:
+    def __init__(
+        self,
+        width: int,
+        height: int,
+        fps: int,
+        jpeg_quality: int,
+        video_index: int,
+    ) -> None:
         self.width = width
         self.height = height
         self.fps = fps
         self.jpeg_quality = jpeg_quality
+        self.video_index = video_index
         self.condition = threading.Condition()
         self.lifecycle_lock = threading.Lock()
         self.stop_event = threading.Event()
@@ -101,7 +109,9 @@ class MipiCameraFeed:
             from hobot_vio import libsrcampy
 
             self.camera = libsrcampy.Camera()
-            result = self.camera.open_cam(0, -1, self.fps, self.width, self.height)
+            result = self.camera.open_cam(
+                0, self.video_index, self.fps, self.width, self.height
+            )
             if result not in (None, 0):
                 raise RuntimeError(
                     f"Camera.open_cam returned {result}; check the MIPI sensor and cable"
@@ -290,6 +300,13 @@ def main() -> None:
     parser.add_argument("--height", type=int, default=720)
     parser.add_argument("--fps", type=int, default=20)
     parser.add_argument("--jpeg-quality", type=int, default=80)
+    parser.add_argument(
+        "--video-index",
+        type=int,
+        choices=(-1, 0, 1, 2),
+        default=-1,
+        help="MIPI host index from /etc/board_config.json; -1 auto-detects",
+    )
     parser.add_argument("--web-root", type=Path, default=DEFAULT_WEB_ROOT)
     args = parser.parse_args()
 
@@ -300,13 +317,22 @@ def main() -> None:
     if not 1 <= args.jpeg_quality <= 100:
         parser.error("--jpeg-quality must be between 1 and 100")
 
-    feed = MipiCameraFeed(args.width, args.height, args.fps, args.jpeg_quality)
+    feed = MipiCameraFeed(
+        args.width,
+        args.height,
+        args.fps,
+        args.jpeg_quality,
+        args.video_index,
+    )
 
     server = ThreadingHTTPServer(
         (args.host, args.port), create_handler(feed, args.web_root)
     )
     server.daemon_threads = True
-    print(f"RDK MIPI bridge listening on http://{args.host}:{args.port}")
+    print(
+        f"RDK MIPI bridge listening on http://{args.host}:{args.port} "
+        f"(video index: {args.video_index})"
+    )
     if args.web_root.is_dir():
         print(f"Serving web app from {args.web_root}")
     else:
