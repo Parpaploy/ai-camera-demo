@@ -3,12 +3,14 @@ import { COCO_CLASSES, detectObjects } from "./utils/yolo";
 import { IouTracker, type TrackedDetection } from "./utils/tracker";
 import {
   AttireDetectionMode,
+  type AttireType,
   Mode,
   PersonDescriptionState,
   Status,
 } from "./interfaces/demo.interface";
 import {
   ATTIRE_DETECTION_MODES,
+  ATTIRE_BOX_COLORS,
   BOX_COLORS,
   CAMERA_DETECT_INTERVAL_MS,
   CAMERA_GEMINI_INTERVAL_MS,
@@ -34,10 +36,132 @@ import {
   parseAttireType,
   parseGenderType,
 } from "./functions/demo.func";
+import type { BoxColorResolver } from "./functions/demo.func";
+import Dashboard from "./components/Dashboard";
+import {
+  clearDetectionHistory,
+  createHistoryId,
+  loadDetectionHistory,
+  persistDetectionHistory,
+  type DetectionHistoryEntry,
+  upsertDetectionHistory,
+} from "./utils/detectionHistory";
+
+type CameraHistorySession = {
+  id: string;
+  startedAt: number;
+  attireMode: AttireDetectionMode;
+};
+
+type CameraSource = "browser" | "rdk-mipi";
+type CameraFrameSource = HTMLVideoElement | HTMLImageElement;
+
+function getFrameDimensions(source: CameraFrameSource) {
+  return source instanceof HTMLVideoElement
+    ? { width: source.videoWidth, height: source.videoHeight }
+    : { width: source.naturalWidth, height: source.naturalHeight };
+}
+
+function buildHistoryEntry(
+  base: Pick<
+    DetectionHistoryEntry,
+    "id" | "startedAt" | "source" | "attireMode"
+  >,
+  people: TrackedDetection[],
+  descriptions: Record<number, PersonDescriptionState>,
+): DetectionHistoryEntry {
+  const categories = people.map(
+    (person) => descriptions[person.trackId]?.attire,
+  );
+  const completedAt = Date.now();
+  const targetCount = categories.filter((type) => type === "target").length;
+  const otherCount = categories.filter((type) => type === "other").length;
+  const uncertainCount = categories.filter(
+    (type) => type === "uncertain",
+  ).length;
+
+  return {
+    ...base,
+    completedAt,
+    durationMs: Math.max(0, completedAt - base.startedAt),
+    peopleDetected: people.length,
+    targetCount,
+    otherCount,
+    uncertainCount,
+    unclassifiedCount:
+      people.length - targetCount - otherCount - uncertainCount,
+  };
+}
+
+function buildCameraHistoryEntry(
+  session: CameraHistorySession,
+  completedAt: number,
+  categories: (AttireType | undefined)[],
+): DetectionHistoryEntry {
+  const targetCount = categories.filter((type) => type === "target").length;
+  const otherCount = categories.filter((type) => type === "other").length;
+  const uncertainCount = categories.filter(
+    (type) => type === "uncertain",
+  ).length;
+
+  return {
+    ...session,
+    completedAt,
+    durationMs: Math.max(0, completedAt - session.startedAt),
+    peopleDetected: categories.length,
+    targetCount,
+    otherCount,
+    uncertainCount,
+    unclassifiedCount:
+      categories.length - targetCount - otherCount - uncertainCount,
+    source: "camera",
+  };
+}
+
+function getDetectionBoxColor(
+  det: Parameters<BoxColorResolver>[0],
+  descriptions: Record<number, PersonDescriptionState>,
+): string {
+  if (det.classId !== PERSON_CLASS_ID() || det.trackId === undefined) {
+    return BOX_COLORS[det.classId % BOX_COLORS.length];
+  }
+
+  switch (descriptions[det.trackId]?.attire) {
+    case "target":
+      return ATTIRE_BOX_COLORS.target;
+    case "other":
+      return ATTIRE_BOX_COLORS.other;
+    case "uncertain":
+      return ATTIRE_BOX_COLORS.uncertain;
+    default:
+      return ATTIRE_BOX_COLORS.pending;
+  }
+}
+
+async function waitForMipiBridge() {
+  let response: Response;
+
+  try {
+    response = await fetch("/api/mipi/start", { method: "POST" });
+  } catch {
+    throw new Error(
+      "ติดต่อบริการกล้องไม่ได้ ให้รัน scripts/rdk_mipi_bridge.py บน RDK X5 ก่อน",
+    );
+  }
+
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || payload?.state !== "ready") {
+    throw new Error(
+      payload?.error ||
+        "เปิดกล้อง MIPI ไม่สำเร็จ ตรวจสอบการต่อกล้องและบริการบน RDK X5",
+    );
+  }
+}
 
 export default function App() {
   const envApiKey = import.meta.env.VITE_GEMINI_API_KEY ?? "";
 
+  const [page, setPage] = useState<"dashboard" | "detector">("dashboard");
   const [mode, setMode] = useState<Mode>("image");
   const [status, setStatus] = useState<Status>("idle");
   const [detections, setDetections] = useState<TrackedDetection[]>([]);
@@ -45,6 +169,8 @@ export default function App() {
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [inferenceMs, setInferenceMs] = useState<number | null>(null);
   const [cameraActive, setCameraActive] = useState(false);
+  const [cameraSource, setCameraSource] = useState<CameraSource>("browser");
+  const [mipiStreamUrl, setMipiStreamUrl] = useState("");
 
   const [attireMode, setAttireMode] =
     useState<AttireDetectionMode>(DEFAULT_ATTIRE_MODE);
@@ -69,6 +195,17 @@ export default function App() {
   const [personDescriptions, setPersonDescriptions] = useState<
     Record<number, PersonDescriptionState>
   >({});
+  const personDescriptionsRef = useRef(personDescriptions);
+  const [history, setHistory] = useState<DetectionHistoryEntry[]>(
+    loadDetectionHistory,
+  );
+  const historyRef = useRef(history);
+  const imageHistorySessionRef = useRef<DetectionHistoryEntry | null>(null);
+  const cameraHistorySessionRef = useRef<CameraHistorySession | null>(null);
+  const cameraTrackSummariesRef = useRef<Map<string, AttireType | undefined>>(
+    new Map(),
+  );
+  const cameraTrackEpochRef = useRef(0);
 
   const selectedClassesRef = useRef(selectedClasses);
   const confThresholdRef = useRef(confThreshold);
@@ -78,11 +215,15 @@ export default function App() {
 
   const imgRef = useRef<HTMLImageElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const mipiImageRef = useRef<HTMLImageElement>(null);
   const imageCanvasRef = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const cameraRequestIdRef = useRef(0);
   const cameraLoopRef = useRef<number | null>(null);
+  const cameraLoopActiveRef = useRef(false);
+  const activeCameraSourceRef = useRef<CameraSource>("browser");
   const runningRef = useRef(false);
   const geminiLastRunRef = useRef(0);
   const geminiRunningRef = useRef(false);
@@ -90,11 +231,46 @@ export default function App() {
 
   const trackerRef = useRef(new IouTracker());
 
+  const saveHistoryEntry = useCallback((entry: DetectionHistoryEntry) => {
+    const next = upsertDetectionHistory(historyRef.current, entry);
+    historyRef.current = next;
+    persistDetectionHistory(next);
+    setHistory(next);
+  }, []);
+
+  const handleClearHistory = useCallback(() => {
+    clearDetectionHistory();
+    imageHistorySessionRef.current = null;
+    historyRef.current = [];
+    setHistory([]);
+  }, []);
+
+  const updatePersonDescription = useCallback(
+    (trackId: number, description: PersonDescriptionState) => {
+      const next = {
+        ...personDescriptionsRef.current,
+        [trackId]: description,
+      };
+      personDescriptionsRef.current = next;
+      setPersonDescriptions(next);
+
+      const key = `${cameraTrackEpochRef.current}:${trackId}`;
+      if (
+        cameraHistorySessionRef.current &&
+        cameraTrackSummariesRef.current.has(key)
+      ) {
+        cameraTrackSummariesRef.current.set(key, description.attire);
+      }
+    },
+    [],
+  );
+
   selectedClassesRef.current = selectedClasses;
   confThresholdRef.current = confThreshold;
   iouThresholdRef.current = iouThreshold;
   modelUrlRef.current = modelUrl;
   attireModeRef.current = attireMode;
+  personDescriptionsRef.current = personDescriptions;
 
   const [resultsPanelHeight, setResultsPanelHeight] = useState<
     number | undefined
@@ -136,8 +312,26 @@ export default function App() {
 
   useEffect(() => {
     setPersonDescriptions({});
+    personDescriptionsRef.current = {};
+    imageHistorySessionRef.current = null;
     trackerRef.current.reset();
   }, [attireMode]);
+
+  useEffect(() => {
+    const session = imageHistorySessionRef.current;
+    if (!session || mode !== "image") return;
+
+    const people = detections.filter(
+      (det) => det.classId === PERSON_CLASS_ID(),
+    );
+    const updated = buildHistoryEntry(
+      session,
+      people,
+      personDescriptions,
+    );
+    imageHistorySessionRef.current = updated;
+    saveHistoryEntry(updated);
+  }, [detections, mode, personDescriptions, saveHistoryEntry]);
 
   const toggleClass = (classId: number) => {
     setSelectedClasses((prev) => {
@@ -164,7 +358,9 @@ export default function App() {
 
   const handleResetTracking = useCallback(() => {
     trackerRef.current.reset();
+    cameraTrackEpochRef.current += 1;
     setPersonDescriptions({});
+    personDescriptionsRef.current = {};
   }, []);
 
   const analyzePerson = useCallback(
@@ -177,10 +373,10 @@ export default function App() {
 
       if (!currentApiKey) {
         setShowApiKeyInput(true);
-        setPersonDescriptions((prev) => ({
-          ...prev,
-          [trackId]: { loading: false, error: "กรุณากรอก Gemini API key ก่อน" },
-        }));
+        updatePersonDescription(trackId, {
+          loading: false,
+          error: "กรุณากรอก Gemini API key ก่อน",
+        });
         return;
       }
 
@@ -190,17 +386,14 @@ export default function App() {
         thumbnail = cropDetectionToDataUrl(source, det);
       } catch (err) {
         console.error(err);
-        setPersonDescriptions((prev) => ({
-          ...prev,
-          [trackId]: { loading: false, error: "ครอปภาพบุคคลไม่สำเร็จ" },
-        }));
+        updatePersonDescription(trackId, {
+          loading: false,
+          error: "ครอปภาพบุคคลไม่สำเร็จ",
+        });
         return;
       }
 
-      setPersonDescriptions((prev) => ({
-        ...prev,
-        [trackId]: { loading: true, thumbnail },
-      }));
+      updatePersonDescription(trackId, { loading: true, thumbnail });
 
       try {
         const text = await describePersonImage(
@@ -213,35 +406,29 @@ export default function App() {
         const ageGroup = parseAgeGroupType(text);
         const cleanText = cleanGeminiText(text);
 
-        setPersonDescriptions((prev) => ({
-          ...prev,
-          [trackId]: {
-            loading: false,
-            thumbnail,
-            text: cleanText,
-            attire,
-            gender,
-            ageGroup,
-          },
-        }));
+        updatePersonDescription(trackId, {
+          loading: false,
+          thumbnail,
+          text: cleanText,
+          attire,
+          gender,
+          ageGroup,
+        });
 
         trackerRef.current.markAnalyzed(trackId);
       } catch (err) {
         console.error(err);
-        setPersonDescriptions((prev) => ({
-          ...prev,
-          [trackId]: {
-            loading: false,
-            thumbnail,
-            error:
-              err instanceof Error
-                ? err.message
-                : "เกิดข้อผิดพลาดจาก Gemini API",
-          },
-        }));
+        updatePersonDescription(trackId, {
+          loading: false,
+          thumbnail,
+          error:
+            err instanceof Error
+              ? err.message
+              : "เกิดข้อผิดพลาดจาก Gemini API",
+        });
       }
     },
-    [apiKey],
+    [apiKey, updatePersonDescription],
   );
 
   const analyzeAllPeople = useCallback(
@@ -290,6 +477,8 @@ export default function App() {
     });
 
     setDetections([]);
+    personDescriptionsRef.current = {};
+    imageHistorySessionRef.current = null;
     setPersonDescriptions({});
     setStatus("idle");
     setErrorMsg("");
@@ -302,8 +491,11 @@ export default function App() {
     const canvas = imageCanvasRef.current;
     if (!img || !canvas) return;
 
+    const historyStartedAt = Date.now();
+    imageHistorySessionRef.current = null;
     setErrorMsg("");
     setDetections([]);
+    personDescriptionsRef.current = {};
     setPersonDescriptions({});
     setStatus("loading-model");
     trackerRef.current.reset();
@@ -324,9 +516,27 @@ export default function App() {
 
       const tracked = trackerRef.current.update(filtered);
 
+      const people = tracked.filter(
+        (det) => det.classId === PERSON_CLASS_ID(),
+      );
+      const historySession = buildHistoryEntry(
+        {
+          id: createHistoryId(),
+          startedAt: historyStartedAt,
+          source: "image",
+          attireMode: attireModeRef.current,
+        },
+        people,
+        personDescriptionsRef.current,
+      );
+      imageHistorySessionRef.current = historySession;
+      saveHistoryEntry(historySession);
+
       setInferenceMs(performance.now() - start);
       setDetections(tracked);
-      drawImageDetections(canvas, img, tracked);
+      drawImageDetections(canvas, img, tracked, (det) =>
+        getDetectionBoxColor(det, personDescriptionsRef.current),
+      );
       setStatus("done");
 
       await analyzeAllPeople(img, tracked);
@@ -339,9 +549,26 @@ export default function App() {
       );
       setStatus("error");
     }
-  }, [analyzeAllPeople]);
+  }, [analyzeAllPeople, saveHistoryEntry]);
+
+  useEffect(() => {
+    if (mode !== "image" || status !== "done") return;
+
+    const img = imgRef.current;
+    const canvas = imageCanvasRef.current;
+    if (!img || !canvas || !img.complete) return;
+
+    drawImageDetections(canvas, img, detections, (det) =>
+      getDetectionBoxColor(det, personDescriptions),
+    );
+  }, [detections, imageUrl, mode, personDescriptions, status]);
 
   const stopCamera = useCallback(() => {
+    cameraRequestIdRef.current += 1;
+    const shouldStopMipi =
+      activeCameraSourceRef.current === "rdk-mipi" &&
+      cameraLoopActiveRef.current;
+    cameraLoopActiveRef.current = false;
     if (cameraLoopRef.current !== null) {
       window.clearTimeout(cameraLoopRef.current);
       cameraLoopRef.current = null;
@@ -354,14 +581,36 @@ export default function App() {
       video.pause();
       video.srcObject = null;
     }
+    if (mipiImageRef.current) {
+      mipiImageRef.current.removeAttribute("src");
+    }
 
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
+    if (shouldStopMipi) {
+      void fetch("/api/mipi/stop", { method: "POST", keepalive: true }).catch(
+        () => undefined,
+      );
+    }
+
+    const cameraSession = cameraHistorySessionRef.current;
+    if (cameraSession) {
+      saveHistoryEntry(
+        buildCameraHistoryEntry(
+          cameraSession,
+          Date.now(),
+          [...cameraTrackSummariesRef.current.values()],
+        ),
+      );
+      cameraHistorySessionRef.current = null;
+    }
 
     setCameraActive(false);
+    setMipiStreamUrl("");
     setStatus("idle");
     setDetections([]);
     setPersonDescriptions({});
+    personDescriptionsRef.current = {};
     trackerRef.current.reset();
 
     const overlay = overlayCanvasRef.current;
@@ -371,16 +620,25 @@ export default function App() {
       overlay.width = 0;
       overlay.height = 0;
     }
-  }, []);
+  }, [saveHistoryEntry]);
 
   const cameraLoop = useCallback(async () => {
-    const video = videoRef.current;
+    const source =
+      activeCameraSourceRef.current === "rdk-mipi"
+        ? mipiImageRef.current
+        : videoRef.current;
     const overlay = overlayCanvasRef.current;
 
-    if (!streamRef.current) return;
+    if (!cameraLoopActiveRef.current) return;
 
-    if (!video || !overlay || video.readyState < 2) {
-      if (streamRef.current) {
+    const sourceReady =
+      source &&
+      (source instanceof HTMLVideoElement
+        ? source.readyState >= 2
+        : source.naturalWidth > 0 && source.naturalHeight > 0);
+
+    if (!source || !overlay || !sourceReady) {
+      if (cameraLoopActiveRef.current) {
         cameraLoopRef.current = window.setTimeout(
           cameraLoop,
           CAMERA_DETECT_INTERVAL_MS,
@@ -390,7 +648,7 @@ export default function App() {
     }
 
     if (runningRef.current) {
-      if (streamRef.current) {
+      if (cameraLoopActiveRef.current) {
         cameraLoopRef.current = window.setTimeout(
           cameraLoop,
           CAMERA_DETECT_INTERVAL_MS,
@@ -403,8 +661,9 @@ export default function App() {
 
     try {
       const start = performance.now();
+      const { width, height } = getFrameDimensions(source);
 
-      const rawResults = await detectObjects(video, {
+      const rawResults = await detectObjects(source, {
         modelUrl: modelUrlRef.current,
         confThreshold: confThresholdRef.current,
         iouThreshold: iouThresholdRef.current,
@@ -416,21 +675,32 @@ export default function App() {
 
       const tracked = trackerRef.current.update(filtered);
 
+      tracked
+        .filter((det) => det.classId === PERSON_CLASS_ID())
+        .forEach((det) => {
+          const key = `${cameraTrackEpochRef.current}:${det.trackId}`;
+          if (!cameraTrackSummariesRef.current.has(key)) {
+            cameraTrackSummariesRef.current.set(
+              key,
+              personDescriptionsRef.current[det.trackId]?.attire,
+            );
+          }
+        });
+
       setInferenceMs(performance.now() - start);
       setDetections(tracked);
 
-      if (
-        overlay.width !== video.videoWidth ||
-        overlay.height !== video.videoHeight
-      ) {
-        overlay.width = video.videoWidth;
-        overlay.height = video.videoHeight;
+      if (overlay.width !== width || overlay.height !== height) {
+        overlay.width = width;
+        overlay.height = height;
       }
 
       const ctx = overlay.getContext("2d");
       if (ctx) {
         ctx.clearRect(0, 0, overlay.width, overlay.height);
-        drawBoxes(ctx, video.videoWidth, tracked);
+        drawBoxes(ctx, width, tracked, (det) =>
+          getDetectionBoxColor(det, personDescriptionsRef.current),
+        );
       }
 
       setStatus("done");
@@ -442,7 +712,7 @@ export default function App() {
         now - geminiLastRunRef.current >= CAMERA_GEMINI_INTERVAL_MS &&
         !geminiRunningRef.current
       ) {
-        await analyzeAllPeople(video, tracked);
+        await analyzeAllPeople(source, tracked);
       }
     } catch (err) {
       console.error(err);
@@ -455,7 +725,7 @@ export default function App() {
     } finally {
       runningRef.current = false;
 
-      if (streamRef.current) {
+      if (cameraLoopActiveRef.current) {
         cameraLoopRef.current = window.setTimeout(
           cameraLoop,
           CAMERA_DETECT_INTERVAL_MS,
@@ -465,40 +735,88 @@ export default function App() {
   }, [analyzeAllPeople]);
 
   const startCamera = useCallback(async () => {
+    const requestId = ++cameraRequestIdRef.current;
     setErrorMsg("");
     setStatus("loading-model");
     trackerRef.current.reset();
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: "environment",
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-        },
-        audio: false,
-      });
+      activeCameraSourceRef.current = cameraSource;
 
-      streamRef.current = stream;
+      if (cameraSource === "rdk-mipi") {
+        await waitForMipiBridge();
+
+        if (requestId !== cameraRequestIdRef.current) {
+          void fetch("/api/mipi/stop", {
+            method: "POST",
+            keepalive: true,
+          }).catch(() => undefined);
+          return;
+        }
+
+        setMipiStreamUrl(`/api/mipi/stream.mjpg?session=${Date.now()}`);
+        cameraLoopActiveRef.current = true;
+      } else {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: "environment",
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          },
+          audio: false,
+        });
+
+        if (requestId !== cameraRequestIdRef.current) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+
+        streamRef.current = stream;
+        cameraLoopActiveRef.current = true;
+      }
+
       geminiLastRunRef.current = 0;
+      cameraTrackSummariesRef.current.clear();
+      cameraTrackEpochRef.current = 0;
+      cameraHistorySessionRef.current = {
+        id: createHistoryId(),
+        startedAt: Date.now(),
+        attireMode: attireModeRef.current,
+      };
       setCameraActive(true);
       setStatus("running");
     } catch (err) {
+      if (requestId !== cameraRequestIdRef.current) return;
       console.error(err);
+      cameraLoopActiveRef.current = false;
       streamRef.current?.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
+      activeCameraSourceRef.current = "browser";
       setCameraActive(false);
       setStatus("error");
       setErrorMsg(
         err instanceof Error
           ? `เปิดกล้องไม่สำเร็จ: ${err.message}`
-          : "เปิดกล้องไม่สำเร็จ ตรวจสอบสิทธิ์การเข้าถึงกล้องของเบราว์เซอร์",
+          : cameraSource === "rdk-mipi"
+            ? "เปิดกล้อง MIPI ไม่สำเร็จ ตรวจสอบบริการบน RDK X5 และการเชื่อมต่อกล้อง"
+            : "เปิดกล้องไม่สำเร็จ ตรวจสอบสิทธิ์การเข้าถึงกล้องของเบราว์เซอร์",
       );
     }
-  }, []);
+  }, [cameraSource]);
 
   useEffect(() => {
     if (!cameraActive) return;
+
+    if (activeCameraSourceRef.current === "rdk-mipi") {
+      cameraLoopRef.current = window.setTimeout(cameraLoop, 200);
+
+      return () => {
+        if (cameraLoopRef.current !== null) {
+          window.clearTimeout(cameraLoopRef.current);
+          cameraLoopRef.current = null;
+        }
+      };
+    }
 
     const video = videoRef.current;
     const stream = streamRef.current;
@@ -537,6 +855,18 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
 
+  useEffect(() => {
+    const releaseMipiOnPageExit = () => {
+      if (activeCameraSourceRef.current === "rdk-mipi") {
+        navigator.sendBeacon?.("/api/mipi/stop");
+      }
+    };
+
+    window.addEventListener("pagehide", releaseMipiOnPageExit);
+    return () =>
+      window.removeEventListener("pagehide", releaseMipiOnPageExit);
+  }, []);
+
   const switchMode = (next: Mode) => {
     if (next === mode) return;
 
@@ -544,6 +874,8 @@ export default function App() {
     setErrorMsg("");
     setStatus("idle");
     setPersonDescriptions({});
+    personDescriptionsRef.current = {};
+    imageHistorySessionRef.current = null;
     setInferenceMs(null);
     trackerRef.current.reset();
 
@@ -551,13 +883,37 @@ export default function App() {
     setMode(next);
   };
 
+  const openDashboard = () => {
+    if (mode === "camera" && status === "loading-model") {
+      cameraRequestIdRef.current += 1;
+      setStatus("idle");
+    }
+    if (cameraActive) stopCamera();
+    setPage("dashboard");
+  };
+
+  const startDetectionFromDashboard = (nextMode: Mode) => {
+    if (nextMode !== mode) switchMode(nextMode);
+    setPage("detector");
+  };
+
+  const handleAttireModeChange = (nextMode: AttireDetectionMode) => {
+    if (cameraActive) stopCamera();
+    setAttireMode(nextMode);
+  };
+
   const handleDescribePerson = useCallback(
     async (det: TrackedDetection) => {
-      const source = mode === "image" ? imgRef.current : videoRef.current;
+      const source =
+        mode === "image"
+          ? imgRef.current
+          : cameraSource === "rdk-mipi"
+            ? mipiImageRef.current
+            : videoRef.current;
       if (!source) return;
       await analyzePerson(source, det, det.trackId);
     },
-    [mode, analyzePerson],
+    [mode, cameraSource, analyzePerson],
   );
 
   useEffect(() => {
@@ -611,13 +967,17 @@ export default function App() {
   ).length;
 
   const targetLabel =
-    ATTIRE_DETECTION_MODES.find((m) => m.id === attireMode)?.label ??
-    "เป้าหมาย";
+    attireMode === "student"
+      ? "นักศึกษา/บุคลากร"
+      : ATTIRE_DETECTION_MODES.find((m) => m.id === attireMode)?.label ??
+        "เป้าหมาย";
+  const otherAttireLabel =
+    attireMode === "student" ? "บุคคลภายนอก" : "ชุดทั่วไป";
 
   return (
     <div className="min-h-screen bg-ink text-slate-100">
       <header className="border-b border-line px-6 py-5">
-        <div className="mx-auto flex max-w-5xl items-center justify-between">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4">
           <div>
             <p className="font-mono text-xs uppercase tracking-[0.2em] text-accent">
               client-side inference
@@ -627,17 +987,46 @@ export default function App() {
             </h1>
           </div>
 
-          <button
-            onClick={() => setShowApiKeyInput((v) => !v)}
-            className="font-mono text-xs text-slate-400 hover:text-accent"
-          >
-            onnxruntime-web ·{" "}
-            {apiKey ? "Gemini API key ✓" : "ตั้งค่า Gemini API key"}
-          </button>
+          <div className="flex flex-wrap items-center gap-3">
+            <nav
+              className="inline-flex rounded-md border border-line bg-panel p-1"
+              aria-label="หน้าหลัก"
+            >
+              <button
+                onClick={openDashboard}
+                aria-current={page === "dashboard" ? "page" : undefined}
+                className={`rounded px-3 py-1.5 text-sm transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${
+                  page === "dashboard"
+                    ? "bg-accent text-ink"
+                    : "text-slate-300 hover:text-white"
+                }`}
+              >
+                Dashboard
+              </button>
+              <button
+                onClick={() => setPage("detector")}
+                aria-current={page === "detector" ? "page" : undefined}
+                className={`rounded px-3 py-1.5 text-sm transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${
+                  page === "detector"
+                    ? "bg-accent text-ink"
+                    : "text-slate-300 hover:text-white"
+                }`}
+              >
+                ตรวจจับ
+              </button>
+            </nav>
+            <button
+              onClick={() => setShowApiKeyInput((v) => !v)}
+              className="font-mono text-xs text-slate-400 hover:text-accent"
+            >
+              onnxruntime-web ·{" "}
+              {apiKey ? "Gemini API key ✓" : "ตั้งค่า Gemini API key"}
+            </button>
+          </div>
         </div>
 
         {showApiKeyInput && (
-          <div className="mx-auto mt-3 flex max-w-5xl flex-wrap items-center gap-2">
+          <div className="mx-auto mt-3 flex max-w-6xl flex-wrap items-center gap-2">
             <input
               type="password"
               placeholder="Gemini API key (AIza...)"
@@ -672,6 +1061,13 @@ export default function App() {
         )}
       </header>
 
+      {page === "dashboard" ? (
+        <Dashboard
+          history={history}
+          onStartDetection={startDetectionFromDashboard}
+          onClearHistory={handleClearHistory}
+        />
+      ) : (
       <main className="mx-auto max-w-5xl px-6 py-8">
         <div className="mb-4 flex flex-wrap items-center gap-3">
           <div className="inline-flex rounded-md border border-line bg-panel p-1">
@@ -701,7 +1097,7 @@ export default function App() {
             {ATTIRE_DETECTION_MODES.map((opt) => (
               <button
                 key={opt.id}
-                onClick={() => setAttireMode(opt.id)}
+                onClick={() => handleAttireModeChange(opt.id)}
                 title={opt.description}
                 className={`rounded px-4 py-1.5 text-sm font-medium transition ${
                   attireMode === opt.id
@@ -760,52 +1156,98 @@ export default function App() {
               )}
             </div>
           ) : (
-            <div className="flex flex-wrap items-center gap-3">
-              {!cameraActive ? (
-                <button
-                  onClick={startCamera}
-                  disabled={status === "loading-model"}
-                  className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-ink transition hover:opacity-90 disabled:opacity-40"
-                >
-                  {status === "loading-model"
-                    ? "กำลังเปิดกล้อง..."
-                    : "เปิดกล้อง"}
-                </button>
-              ) : (
-                <>
-                  <button
-                    onClick={stopCamera}
-                    className="rounded-md border border-warn/50 px-4 py-2 text-sm font-medium text-warn transition hover:bg-warn/10"
-                  >
-                    ปิดกล้อง
-                  </button>
-                  <button
-                    onClick={handleResetTracking}
-                    className="rounded-md border border-line px-4 py-2 text-sm font-medium text-slate-300 transition hover:border-accent hover:text-accent"
-                    title="ล้าง track ID ทั้งหมด แล้ววิเคราะห์ทุกคนใหม่"
-                  >
-                    รีเซ็ต tracking
-                  </button>
-                </>
-              )}
-
-              {cameraActive && (
-                <span className="font-mono text-xs text-slate-400">
-                  {inferenceMs !== null && `${inferenceMs.toFixed(0)}ms · `}
-                  {detections.length} objects · ติดตาม{" "}
-                  {trackerRef.current.activeTrackCount} track · YOLO ทุก{" "}
-                  {CAMERA_DETECT_INTERVAL_MS}ms · Gemini ทุก{" "}
-                  {CAMERA_GEMINI_INTERVAL_MS / 1000}s
+            <>
+              <div className="mb-4 flex flex-wrap items-center gap-3">
+                <span className="text-sm font-medium text-slate-300">
+                  แหล่งกล้อง
                 </span>
-              )}
-            </div>
+                <div
+                  role="group"
+                  aria-label="เลือกแหล่งกล้อง"
+                  className="inline-flex rounded-md border border-line bg-ink p-1"
+                >
+                  {(
+                    [
+                      ["browser", "กล้องเบราว์เซอร์"],
+                      ["rdk-mipi", "RDK X5 · MIPI"],
+                    ] as const
+                  ).map(([source, label]) => (
+                    <button
+                      key={source}
+                      type="button"
+                      onClick={() => setCameraSource(source)}
+                      disabled={cameraActive || status === "loading-model"}
+                      aria-pressed={cameraSource === source}
+                      className={`rounded px-3 py-1.5 text-sm transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50 ${
+                        cameraSource === source
+                          ? "bg-accent text-ink"
+                          : "text-slate-300 hover:text-white"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-xs text-slate-400">
+                  {cameraSource === "rdk-mipi"
+                    ? "ต้องเปิดแอปจาก RDK X5 และรันบริการกล้องบนบอร์ด"
+                    : "ใช้กล้องที่เบราว์เซอร์เลือกให้"}
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3">
+                {!cameraActive ? (
+                  <button
+                    onClick={startCamera}
+                    disabled={status === "loading-model"}
+                    className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-ink transition hover:opacity-90 disabled:opacity-40"
+                  >
+                    {status === "loading-model"
+                      ? cameraSource === "rdk-mipi"
+                        ? "กำลังเชื่อมต่อ MIPI..."
+                        : "กำลังเปิดกล้อง..."
+                      : cameraSource === "rdk-mipi"
+                        ? "เปิดกล้อง MIPI"
+                        : "เปิดกล้อง"}
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      onClick={stopCamera}
+                      className="rounded-md border border-warn/50 px-4 py-2 text-sm font-medium text-warn transition hover:bg-warn/10"
+                    >
+                      ปิดกล้อง
+                    </button>
+                    <button
+                      onClick={handleResetTracking}
+                      className="rounded-md border border-line px-4 py-2 text-sm font-medium text-slate-300 transition hover:border-accent hover:text-accent"
+                      title="ล้าง track ID ทั้งหมด แล้ววิเคราะห์ทุกคนใหม่"
+                    >
+                      รีเซ็ต tracking
+                    </button>
+                  </>
+                )}
+
+                {cameraActive && (
+                  <span className="font-mono text-xs text-slate-400">
+                    {inferenceMs !== null && `${inferenceMs.toFixed(0)}ms · `}
+                    {detections.length} objects · ติดตาม{" "}
+                    {trackerRef.current.activeTrackCount} track · YOLO ทุก{" "}
+                    {CAMERA_DETECT_INTERVAL_MS}ms · Gemini ทุก{" "}
+                    {CAMERA_GEMINI_INTERVAL_MS / 1000}s
+                  </span>
+                )}
+              </div>
+            </>
           )}
 
           {errorMsg && (
             <div className="mt-4 rounded-md border border-warn/40 bg-warn/10 px-4 py-3 text-sm text-warn">
               {errorMsg}
               <p className="mt-1 text-xs text-warn/80">
-                วางไฟล์โมเดลที่ export แล้วไว้ที่ <code>public/models/</code>
+                {mode === "camera" && cameraSource === "rdk-mipi"
+                  ? "ตรวจสอบกล้อง MIPI และบริการ scripts/rdk_mipi_bridge.py บน RDK X5"
+                  : "วางไฟล์โมเดลที่ export แล้วไว้ที่ public/models/"}
               </p>
             </div>
           )}
@@ -974,13 +1416,33 @@ export default function App() {
                 <div className="relative aspect-video w-full overflow-hidden rounded-md bg-black">
                   {cameraActive ? (
                     <>
-                      <video
-                        ref={videoRef}
-                        playsInline
-                        muted
-                        autoPlay
-                        className="absolute inset-0 block h-full w-full scale-x-[-1] object-contain"
-                      />
+                      {cameraSource === "rdk-mipi" ? (
+                        <img
+                          ref={mipiImageRef}
+                          src={mipiStreamUrl}
+                          alt="ภาพสดจากกล้อง MIPI ของ RDK X5"
+                          onError={() => {
+                            cameraLoopActiveRef.current = false;
+                            void fetch("/api/mipi/stop", {
+                              method: "POST",
+                              keepalive: true,
+                            }).catch(() => undefined);
+                            setStatus("error");
+                            setErrorMsg(
+                              "รับภาพจากกล้อง MIPI ไม่ได้ ตรวจสอบบริการบน RDK X5 แล้วลองปิดและเปิดกล้องใหม่",
+                            );
+                          }}
+                          className="absolute inset-0 block h-full w-full object-contain"
+                        />
+                      ) : (
+                        <video
+                          ref={videoRef}
+                          playsInline
+                          muted
+                          autoPlay
+                          className="absolute inset-0 block h-full w-full scale-x-[-1] object-contain"
+                        />
+                      )}
                       <canvas
                         ref={overlayCanvasRef}
                         className="pointer-events-none absolute inset-0 h-full w-full"
@@ -1022,7 +1484,14 @@ export default function App() {
                   <div className="mb-5 space-y-4">
                     <div className="grid grid-cols-2 gap-2">
                       <div className="rounded-md border border-accent/20 bg-accent/5 p-3">
-                        <p className="text-[10px] text-slate-500">
+                        <p className="flex items-center gap-1.5 text-[10px] text-slate-500">
+                          <span
+                            aria-hidden="true"
+                            className="h-2 w-2 rounded-full"
+                            style={{
+                              backgroundColor: ATTIRE_BOX_COLORS.target,
+                            }}
+                          />
                           {targetLabel}
                         </p>
                         <p className="text-xl font-semibold text-accent">
@@ -1031,7 +1500,16 @@ export default function App() {
                         </p>
                       </div>
                       <div className="rounded-md border border-line bg-black/10 p-3">
-                        <p className="text-[10px] text-slate-500">ชุดทั่วไป</p>
+                        <p className="flex items-center gap-1.5 text-[10px] text-slate-500">
+                          <span
+                            aria-hidden="true"
+                            className="h-2 w-2 rounded-full"
+                            style={{
+                              backgroundColor: ATTIRE_BOX_COLORS.other,
+                            }}
+                          />
+                          {otherAttireLabel}
+                        </p>
                         <p className="text-xl font-semibold text-slate-200">
                           {otherCount}{" "}
                           <span className="text-xs font-normal">คน</span>
@@ -1113,8 +1591,10 @@ export default function App() {
                             <span
                               className="h-2 w-2 shrink-0 rounded-full"
                               style={{
-                                backgroundColor:
-                                  BOX_COLORS[det.classId % BOX_COLORS.length],
+                                backgroundColor: getDetectionBoxColor(
+                                  det,
+                                  personDescriptions,
+                                ),
                               }}
                             />
 
@@ -1195,6 +1675,7 @@ export default function App() {
           </div>
         </section>
       </main>
+      )}
     </div>
   );
 }

@@ -7,10 +7,15 @@ import {
 } from "../interfaces/demo.interface";
 import { Detection } from "../utils/yolo";
 
+export type BoxColorResolver = (
+  det: Detection & { trackId?: number },
+) => string;
+
 export function drawImageDetections(
   canvas: HTMLCanvasElement,
   img: HTMLImageElement,
   dets: Detection[],
+  getColor?: BoxColorResolver,
 ) {
   canvas.width = img.naturalWidth;
   canvas.height = img.naturalHeight;
@@ -21,16 +26,18 @@ export function drawImageDetections(
 
   ctx.drawImage(img, 0, 0);
 
-  drawBoxes(ctx, img.naturalWidth, dets);
+  drawBoxes(ctx, img.naturalWidth, dets, getColor);
 }
 
 export function drawBoxes(
   ctx: CanvasRenderingContext2D,
   refWidth: number,
   dets: (Detection & { trackId?: number })[],
+  getColor?: BoxColorResolver,
 ) {
   dets.forEach((det) => {
-    const color = BOX_COLORS[det.classId % BOX_COLORS.length];
+    const color =
+      getColor?.(det) ?? BOX_COLORS[det.classId % BOX_COLORS.length];
     const [x, y, w, h] = det.box;
 
     ctx.strokeStyle = color;
@@ -126,7 +133,7 @@ function buildAttirePrompt(mode: AttireDetectionMode): string {
       ? "1. การแต่งกาย: [TARGET] หากสวมชุดบุคลากรทางการแพทย์ เช่น เสื้อสครับ (scrubs) ชุดหมอ ชุดพยาบาล หรือชุดพาราเมดิก/เจ้าหน้าที่กู้ชีพ " +
         "(ชุดประเภทนี้อาจเป็นสีอะไรก็ได้ ไม่จำเป็นต้องเป็นสีกรมท่า และมักมีลักษณะ เช่น คอวี กระเป๋าหน้าอก ตราสัญลักษณ์โรงพยาบาล/หน่วยงาน ป้ายชื่อ/ตำแหน่งงาน หรือแถบสะท้อนแสง), " +
         "[OTHER] สำหรับชุดทั่วไปที่ไม่ใช่ชุดบุคลากรทางการแพทย์, [UNCERTAIN_ATTIRE] หากไม่แน่ใจ\n"
-      : "1. การแต่งกาย: [TARGET] สำหรับชุดนักศึกษา/เครื่องแบบนักเรียน, [OTHER] สำหรับชุดทั่วไป, [UNCERTAIN_ATTIRE] หากไม่แน่ใจ\n";
+      : "1. การแต่งกาย: [TARGET] สำหรับผู้ที่สวมชุดนักศึกษา/เครื่องแบบนักเรียน หรือเสื้อโปโล ให้จัดเป็นนักศึกษาหรือบุคลากร; [OTHER] สำหรับผู้ที่สวมเสื้อผ้าแบบอื่น ให้จัดเป็นบุคคลภายนอก; [UNCERTAIN_ATTIRE] หากมองไม่ชัดหรือไม่แน่ใจ\n";
 
   const example =
     mode === "medical"
@@ -228,9 +235,9 @@ export function getAttireLabel(
 ): string | null {
   switch (attire) {
     case "target":
-      return mode === "medical" ? "บุคลากรทางการแพทย์" : "ชุดนักศึกษา";
+      return mode === "medical" ? "บุคลากรทางการแพทย์" : "นักศึกษา/บุคลากร";
     case "other":
-      return "ชุดทั่วไป";
+      return mode === "medical" ? "ชุดทั่วไป" : "บุคคลภายนอก";
     case "uncertain":
       return "ไม่แน่ใจ";
     default:
@@ -243,7 +250,7 @@ export function getAttireClass(attire?: AttireType): string {
     case "target":
       return "border-accent/30 bg-accent/10 text-accent";
     case "other":
-      return "border-line bg-white/5 text-slate-400";
+      return "border-orange-400/30 bg-orange-400/10 text-orange-300";
     case "uncertain":
       return "border-warn/30 bg-warn/10 text-warn";
     default:

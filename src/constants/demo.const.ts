@@ -10,6 +10,13 @@ export const BOX_COLORS = [
   "#60a5fa",
 ];
 
+export const ATTIRE_BOX_COLORS = {
+  target: "#5eead4",
+  other: "#fb923c",
+  uncertain: "#facc15",
+  pending: "#94a3b8",
+};
+
 export const MODEL_INPUT_SIZE = 640;
 export const DEFAULT_CONF_THRESHOLD = 0.35;
 export const DEFAULT_IOU_THRESHOLD = 0.45;
@@ -53,7 +60,8 @@ export const ATTIRE_DETECTION_MODES: AttireModeOption[] = [
   {
     id: "student",
     label: "ชุดนักศึกษา",
-    description: "ตรวจจับผู้ที่สวมชุดนักศึกษา / เครื่องแบบนักเรียน",
+    description:
+      "ชุดนักศึกษา/เครื่องแบบหรือเสื้อโปโลจัดเป็นนักศึกษา/บุคลากร; เสื้อผ้าอื่นจัดเป็นบุคคลภายนอก",
   },
   {
     id: "medical",

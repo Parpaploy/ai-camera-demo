@@ -1,7 +1,8 @@
 # YOLOv8 + Vite + React + TypeScript + Tailwind
 
-รัน object detection ด้วย YOLOv8 ทั้งหมดฝั่ง client (เบราว์เซอร์) ผ่าน `onnxruntime-web`
-ไม่ต้องมี backend server
+รัน object detection ด้วย YOLOv8 ฝั่ง client (เบราว์เซอร์) ผ่าน `onnxruntime-web`
+กล้องทั่วไปใช้ Web Camera API ได้โดยตรง ส่วนกล้อง MIPI ของ RDK X5 ใช้บริการ Python
+บนบอร์ดเพื่อส่งภาพเข้าหน้าเว็บ
 
 ## 1. ติดตั้ง dependencies
 
@@ -34,6 +35,44 @@ npm run dev
 ```
 
 เปิด `http://localhost:5173` เลือกรูปภาพ แล้วกด "ตรวจจับวัตถุ"
+
+## ใช้กล้อง MIPI บน RDK X5
+
+บริการ `scripts/rdk_mipi_bridge.py` ใช้ `hobot_vio` ของ RDK X5 อ่านกล้อง MIPI
+แล้วส่งภาพแบบ MJPEG ให้หน้าเว็บ ส่วน YOLO และการวิเคราะห์ Gemini ยังทำงานในเบราว์เซอร์
+เหมือนเดิม
+
+1. คัดลอกโปรเจกต์ไปไว้บน RDK X5 และตรวจสอบว่าบอร์ดติดตั้ง RDK Python SDK,
+   `hobot_vio`, NumPy และ OpenCV แล้ว
+2. รันบริการกล้อง:
+
+   ```bash
+   python3 scripts/rdk_mipi_bridge.py
+   ```
+
+3. สำหรับพัฒนา ให้เปิดอีกเทอร์มินัลบนบอร์ดแล้วรัน:
+
+   ```bash
+   npm install
+   npm run dev -- --host 0.0.0.0
+   ```
+
+   เปิด `http://<IP ของ RDK X5>:5173` แล้วเลือก **กล้องสด → RDK X5 · MIPI**
+   ในหน้าแอป
+
+สำหรับใช้งานแบบ build ให้รัน `npm run build` ก่อน จากนั้นเริ่มบริการกล้องตามข้อ 2
+แล้วเปิด `http://<IP ของ RDK X5>:8765` ได้เลย บริการจะเสิร์ฟไฟล์จาก `dist/public`
+และสตรีมภาพจากกล้องใน origin เดียวกัน
+
+ปรับความละเอียดและเฟรมเรตได้ เช่น:
+
+```bash
+python3 scripts/rdk_mipi_bridge.py --width 1920 --height 1080 --fps 30
+```
+
+กล้องต้องเป็นรุ่นที่ RDK X5 และ SDK บนบอร์ดรองรับ ดูรายละเอียดที่
+[RDK X5 MIPI Camera API](https://developer.d-robotics.cc/rdk_x_doc/en/Basic_Application/multi_media_sp_dev_api/RDK_X5/pydev_multimedia_api_x5/object_camera)
+และ [ตัวอย่างแสดงกล้องผ่านเว็บ](https://developer.d-robotics.cc/rdk_doc/en/Basic_Application/pydev_demo_sample/RDK_X5/web_display_camera_sample/)
 
 ## โครงสร้างไฟล์สำคัญ
 
