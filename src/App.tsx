@@ -149,11 +149,20 @@ async function waitForMipiBridge() {
     );
   }
 
-  const payload = await response.json().catch(() => null);
+  const responseText = await response.text();
+  let payload: { state?: string; error?: string } | null = null;
+  try {
+    payload = JSON.parse(responseText) as { state?: string; error?: string };
+  } catch {
+    // The Vite proxy can return a plain-text error when the bridge is offline.
+  }
+
   if (!response.ok || payload?.state !== "ready") {
     throw new Error(
       payload?.error ||
-        "เปิดกล้อง MIPI ไม่สำเร็จ ตรวจสอบการต่อกล้องและบริการบน RDK X5",
+        (responseText.trim()
+          ? `บริการกล้องตอบกลับ HTTP ${response.status}: ${responseText.trim().slice(0, 240)}`
+          : `บริการกล้องตอบกลับ HTTP ${response.status} โดยไม่มีรายละเอียด ตรวจว่า scripts/rdk_mipi_bridge.py ทำงานบน RDK X5 และเปิดพอร์ต 8765 แล้ว`),
     );
   }
 }
@@ -1422,6 +1431,7 @@ export default function App() {
                           src={mipiStreamUrl}
                           alt="ภาพสดจากกล้อง MIPI ของ RDK X5"
                           onError={() => {
+                            if (!cameraLoopActiveRef.current) return;
                             cameraLoopActiveRef.current = false;
                             void fetch("/api/mipi/stop", {
                               method: "POST",
