@@ -62,9 +62,12 @@ export function createApiServer({ store, accessKey, adminPassword = process.env.
       if (req.method === 'GET' && url.pathname === '/api/data/health') {
         await store.health(); send(200, { data: { status: 'ok' } }); return;
       }
-      const imageMatch = req.method === 'GET' && url.pathname.match(/^\/api\/data\/events\/([A-Za-z0-9_.:-]{1,160})\/image$/);
+      const imageMatch = req.method === 'GET' && url.pathname.match(/^\/api\/data\/events\/([^/]{1,480})\/image$/);
       if (imageMatch) {
-        const image = await store.image(imageMatch[1]);
+        let eventId;
+        try { eventId = decodeURIComponent(imageMatch[1]); } catch { throw new ApiError(404, 'ไม่พบภาพ crop ของเหตุการณ์นี้'); }
+        if (!/^[A-Za-z0-9_.:-]{1,160}$/.test(eventId)) throw new ApiError(404, 'ไม่พบภาพ crop ของเหตุการณ์นี้');
+        const image = await store.image(eventId);
         if (!image) { send(404, { error: { message: 'ไม่พบภาพ crop ของเหตุการณ์นี้' } }); return; }
         res.writeHead(200, { 'Content-Type': image.contentType, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Length': image.imageData.length });
         res.end(image.imageData); return;
