@@ -101,3 +101,73 @@ python3 scripts/rdk_mipi_bridge.py --video-index 2 --width 1920 --height 1080 --
 ทางเลือกอื่นคือรัน YOLOv8 บน Python backend (เช่น FastAPI ที่ใช้ `ultralytics`
 ตรงๆ) แล้วให้ React ส่งรูปไปทาง REST API แทนที่จะรันในเบราว์เซอร์ — ถ้าต้องการ
 แนวทางนี้แจ้งได้ จะจัดให้อีกชุด
+
+## ความเสถียรของกล้องและสิ่งที่นำมาจาก CAMT_edgeAI
+
+ตรวจเทียบกับ `CAMT_edgeAI/object_detection_tiled.py`, `mipi_camera_app.py`
+และ `mipi_cam.py`: ใช้กล้องผ่าน `hobot_vio/libsrcampy` และแปลง NV12 เหมือนกัน
+แนวทางอ่านกล้องแยกจาก inference และเก็บเฉพาะเฟรมล่าสุดใช้ร่วมกันได้ ส่วนโมเดล
+YOLOv13 `.bin` ของ CAMT เป็นเส้นทาง BPU บนบอร์ด ไม่สามารถแทนไฟล์ ONNX
+ของเว็บได้โดยตรง หากย้าย inference ไป BPU ต้องเพิ่ม API ส่งผล detection และปรับ
+pre/postprocessing ให้ตรงโมเดลก่อน
+
+CAMT ใช้ thread และ `close_cam()` ใน cleanup แต่ `join(timeout=2)`
+ไม่ได้ยุติ thread ที่ติดใน native SDK จึงยังไม่ใช่หลักประกันว่าจะเปิดรอบสองได้
+ai-camera ปรับการจัดการดังนี้:
+
+- เว็บเรียงคำสั่ง MIPI stop/start และใช้หมายเลขรอบเพื่อทิ้งผล inference เก่า
+  ป้องกันลูปเก่ากลับมาสร้าง timer ซ้ำหลังเปิดกล้องใหม่
+- YOLO ทำงานต่อได้ระหว่างรอ Gemini; Gemini มี timeout 30 วินาทีและทิ้งผลจากรอบเก่า
+- คืน tensor ทุกครั้งแม้ inference ล้มเหลว, ใช้ canvas preprocessing ซ้ำ,
+  ล้าง thumbnail ของ track ที่หมดอายุ และรวมยอด track เก่าเป็นตัวนับ
+- Bridge ให้ process ลูกเป็นเจ้าของ SDK เพียงตัวเดียว เก็บ JPEG ล่าสุดใน buffer
+  ที่มีขนาดจำกัด ไม่มีคิวเฟรมสะสม; ปิดแบบปกติก่อน แล้ว terminate/kill เมื่อไม่ตอบสนอง
+- Watchdog ตรวจเฟรมใหม่ (ค่าเริ่มต้น 10 วินาที) และลองเปิด process กล้องใหม่สูงสุด
+  3 ครั้งต่อการกดเริ่มหนึ่งครั้ง จากนั้นรายงาน error ไม่วน restart ไม่สิ้นสุด
+- การเชื่อมต่อ MJPEG เก่าจบตามรอบของตัวเอง และมี timeout สำหรับ client ที่อ่านช้า
+  หน้าเว็บตรวจสถานะ bridge ทุก 2 วินาที
+
+ปรับเวลาตรวจเฟรมค้างได้:
+
+```bash
+python3 scripts/rdk_mipi_bridge.py --width 1280 --height 720 --fps 20 --frame-timeout 10
+```
+
+ดูสถานะที่ `/api/mipi/status`: `state`, `error`, `frameId`, `frameAgeSeconds`,
+`restartCount` ใช้แยกปัญหาเฟรมกล้องออกจากความช้าของ YOLO/Gemini
+ค่า `restartCount` เป็นจำนวนครั้งที่ลองเปิดใหม่สะสมในรอบนั้น
+
+### การตรวจสอบ
+
+ทดสอบอัตโนมัติบนเครื่องพัฒนาโดยไม่ต้องติดตั้ง SDK กล้อง:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py' -v
+node --test tests/runtime.test.cjs
+npm run build
+```
+
+ชุด Python ใช้ process จำลองเพื่อทดสอบเปิด–ปิด 20 รอบ, หยุด native read ที่ค้าง,
+watchdog จำกัดจำนวน retry, worker ตายขณะถือ lock และ start ซ้ำ
+ชุด JavaScript จำลอง inference/Gemini เพื่อทดสอบการทิ้งผลจากรอบเก่า,
+ไม่รอ Gemini ในลูปภาพ, คืน tensor เมื่อสำเร็จ/ล้มเหลว และ tracker 10,000 เฟรม
+เป็น regression tests ของ logic ไม่ใช่การทดสอบกล้องหรือ ONNX จริง
+
+ก่อนนำไปใช้งานต่อเนื่อง ให้ทดสอบบน RDK X5:
+
+1. ปิดโปรแกรม CAMT/โปรแกรมอื่นที่ใช้กล้องเดียวกัน แล้วรัน bridge และเว็บรุ่นใหม่
+2. เปิด–ปิดกล้อง 50 รอบ รวมการปิดระหว่างกำลังเริ่มและขณะ Gemini ยังวิเคราะห์
+   ตรวจว่ารอบใหม่มี `frameId` เพิ่มและไม่มี process กล้องเก่าค้าง
+3. รัน 8–24 ชั่วโมง ตรวจ RAM ของเบราว์เซอร์/bridge/worker, CPU, อุณหภูมิ,
+   `frameAgeSeconds` และจำนวน restart ว่าหน่วยความจำไม่โตต่อเนื่อง
+4. จำลองเครือข่าย/Gemini ช้า ตรวจว่า YOLO ยังทำงาน และการปิดกล้องยังตอบสนอง
+5. หากใช้ IMX219 ความละเอียด sensor เต็มแบบ CAMT ให้ตรวจค่า resolution กับ SDK
+   บนบอร์ดก่อนเปลี่ยน `open_cam`; ตัวอย่าง CAMT ใช้ raw sensor 3264×2464
+   ขณะที่ bridge นี้คงการตั้งค่า output เดิมและใช้ raw sensor ค่าเริ่มต้นของ SDK
+
+การแยก process ช่วยให้ HTTP server ไม่ติดไปกับ native call แต่ไม่รับประกันว่า
+จะกู้ driver/kernel ที่ค้างได้ หาก kill process แล้วยังเปิดไม่ได้ ต้องตรวจ log บนบอร์ด
+และอาจต้อง restart บริการหรือบอร์ด การแก้ชุดนี้ยังไม่ได้ทดสอบกับฮาร์ดแวร์ RDK จริง
+
+อ้างอิง signature ของ SDK:
+[RDK X5 Camera API](https://developer.d-robotics.cc/rdk_x_doc/en/Basic_Application/multi_media_sp_dev_api/RDK_X5/pydev_multimedia_api_x5/object_camera)

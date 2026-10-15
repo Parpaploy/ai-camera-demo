@@ -104,6 +104,10 @@ export class IouTracker {
     return results;
   }
 
+  hasTrack(trackId: number): boolean {
+    return this.tracks.has(trackId);
+  }
+
   markAnalyzed(trackId: number) {
     const track = this.tracks.get(trackId);
 

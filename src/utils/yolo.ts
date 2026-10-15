@@ -121,6 +121,9 @@ export function loadYoloModel(modelUrl = "/models/yolov8n.onnx") {
     cached = ort.InferenceSession.create(modelUrl, {
       executionProviders: ["wasm"],
       graphOptimizationLevel: "all",
+    }).catch((error) => {
+      sessionCache.delete(modelUrl);
+      throw error;
     });
 
     sessionCache.set(modelUrl, cached);
@@ -132,6 +135,8 @@ export function loadYoloModel(modelUrl = "/models/yolov8n.onnx") {
 export function isModelLoaded(modelUrl: string): boolean {
   return sessionCache.has(modelUrl);
 }
+
+let preprocessingCanvas: HTMLCanvasElement | undefined;
 
 function letterbox(
   source: HTMLImageElement | HTMLVideoElement,
@@ -148,9 +153,9 @@ function letterbox(
   const padX = Math.floor((targetSize - scaledW) / 2);
   const padY = Math.floor((targetSize - scaledH) / 2);
 
-  const canvas = document.createElement("canvas");
-  canvas.width = targetSize;
-  canvas.height = targetSize;
+  const canvas = preprocessingCanvas ??= document.createElement("canvas");
+  if (canvas.width !== targetSize) canvas.width = targetSize;
+  if (canvas.height !== targetSize) canvas.height = targetSize;
   const ctx = canvas.getContext("2d")!;
   ctx.fillStyle = "rgb(114,114,114)";
   ctx.fillRect(0, 0, targetSize, targetSize);
@@ -305,19 +310,25 @@ export async function detectObjects(
 
   const inputName = session.inputNames[0];
   const outputName = session.outputNames[0];
-  const results = await session.run({ [inputName]: inputTensor });
+  let results: Record<string, ort.Tensor> = {};
+  try {
+    results = await session.run({ [inputName]: inputTensor });
 
-  const srcWidth =
-    "videoWidth" in source ? source.videoWidth : source.naturalWidth;
-  const srcHeight =
-    "videoHeight" in source ? source.videoHeight : source.naturalHeight;
+    const srcWidth =
+      "videoWidth" in source ? source.videoWidth : source.naturalWidth;
+    const srcHeight =
+      "videoHeight" in source ? source.videoHeight : source.naturalHeight;
 
-  return decodeOutput(
-    results[outputName],
-    letterboxResult,
-    srcWidth,
-    srcHeight,
-    confThreshold,
-    iouThreshold,
-  );
+    return decodeOutput(
+      results[outputName],
+      letterboxResult,
+      srcWidth,
+      srcHeight,
+      confThreshold,
+      iouThreshold,
+    );
+  } finally {
+    inputTensor.dispose();
+    Object.values(results).forEach((tensor) => tensor.dispose());
+  }
 }
