@@ -6,19 +6,25 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build --outDir ./dist/public",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "data:dev": "node --env-file=.env.server server/index.mjs",
+    "data:migrate": "node --env-file=.env.server server/migrate.mjs",
+    "test:data": "node --test tests/data-*.test.*"
   },
   "dependencies": {
     "firebase": "^12.18.0",
+    "mysql2": "^3.24.6",
     "onnxruntime-web": "^1.19.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
     "@types/react": "^18.3.11",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.2",
     "autoprefixer": "^10.4.20",
+    "fake-indexeddb": "^6.2.5",
     "postcss": "^8.4.47",
     "tailwindcss": "^3.4.13",
     "typescript": "^5.6.2",

@@ -78,6 +78,8 @@ function cameraHarness(detect, describe = async () => '[TARGET]') {
       useState: value => [typeof value === 'function' ? value() : value, () => {}],
     },
     './utils/yolo': yolo, './utils/tracker': tracker, './constants/demo.const': constants,
+    './utils/personEvents': load('src/utils/personEvents.ts', {}),
+    './utils/dataSync': { queuePersonEvent() {}, getCameraId: () => 'test-camera', startDataSync() {} },
     './components/Dashboard': {},
     './functions/demo.func': { drawBoxes() {}, cropDetectionToDataUrl: () => 'image',
       describePersonImage: describe, parseAttireType: () => 'target', parseGenderType: () => 'uncertain',

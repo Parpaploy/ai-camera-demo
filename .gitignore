@@ -31,3 +31,5 @@ pnpm-debug.log*
 # Python runtime caches
 __pycache__/
 *.pyc
+
+.env.server

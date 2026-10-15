@@ -38,6 +38,8 @@ import {
 } from "./functions/demo.func";
 import type { BoxColorResolver } from "./functions/demo.func";
 import Dashboard from "./components/Dashboard";
+import { PersonEventRecorder } from "./utils/personEvents";
+import { getCameraId, queuePersonEvent, startDataSync } from "./utils/dataSync";
 import {
   clearDetectionHistory,
   createHistoryId,
@@ -260,6 +262,8 @@ export default function App() {
   const leftPanelRef = useRef<HTMLDivElement>(null);
 
   const trackerRef = useRef(new IouTracker());
+  const eventRecorderRef = useRef(new PersonEventRecorder(queuePersonEvent));
+  useEffect(() => startDataSync(), []);
 
   const saveHistoryEntry = useCallback((entry: DetectionHistoryEntry) => {
     const next = upsertDetectionHistory(historyRef.current, entry);
@@ -283,6 +287,7 @@ export default function App() {
       };
       personDescriptionsRef.current = next;
       setPersonDescriptions(next);
+      eventRecorderRef.current.classify(trackId, description);
 
       const key = `${cameraTrackEpochRef.current}:${trackId}`;
       if (
@@ -387,6 +392,7 @@ export default function App() {
   };
 
   const handleResetTracking = useCallback(() => {
+    eventRecorderRef.current.resetTracks();
     analysisEpochRef.current += 1;
     trackerRef.current.reset();
     cameraTrackEpochRef.current += 1;
@@ -506,6 +512,7 @@ export default function App() {
 
   const handleFile = useCallback((file: File | undefined) => {
     if (!file) return;
+    eventRecorderRef.current.finish();
 
     const url = URL.createObjectURL(file);
 
@@ -530,6 +537,7 @@ export default function App() {
     if (!img || !canvas) return;
 
     const historyStartedAt = Date.now();
+    eventRecorderRef.current.begin(createHistoryId(), getCameraId(), "image", attireModeRef.current);
     imageHistorySessionRef.current = null;
     setErrorMsg("");
     setDetections([]);
@@ -553,6 +561,10 @@ export default function App() {
       );
 
       const tracked = trackerRef.current.update(filtered);
+      eventRecorderRef.current.observe(
+        tracked.filter(det => det.classId === PERSON_CLASS_ID()),
+        id => trackerRef.current.hasTrack(id),
+      );
 
       const people = tracked.filter(
         (det) => det.classId === PERSON_CLASS_ID(),
@@ -602,6 +614,7 @@ export default function App() {
   }, [detections, imageUrl, mode, personDescriptions, status]);
 
   const stopCamera = useCallback(() => {
+    eventRecorderRef.current.finish();
     cameraRequestIdRef.current += 1;
     analysisEpochRef.current += 1;
     loopGenerationRef.current += 1;
@@ -713,6 +726,10 @@ export default function App() {
       );
 
       const tracked = trackerRef.current.update(filtered);
+      eventRecorderRef.current.observe(
+        tracked.filter(det => det.classId === PERSON_CLASS_ID()),
+        id => trackerRef.current.hasTrack(id),
+      );
       for (const [key, attire] of cameraTrackSummariesRef.current) {
         const [epoch, id] = key.split(":").map(Number);
         if (epoch !== cameraTrackEpochRef.current || !trackerRef.current.hasTrack(id)) {
@@ -837,6 +854,7 @@ export default function App() {
         startedAt: Date.now(),
         attireMode: attireModeRef.current,
       };
+      eventRecorderRef.current.begin(cameraHistorySessionRef.current.id, getCameraId(), "camera", attireModeRef.current);
       setCameraActive(true);
       setStatus("running");
     } catch (err) {

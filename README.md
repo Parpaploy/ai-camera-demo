@@ -171,3 +171,13 @@ watchdog จำกัดจำนวน retry, worker ตายขณะถื�
 
 อ้างอิง signature ของ SDK:
 [RDK X5 Camera API](https://developer.d-robotics.cc/rdk_x_doc/en/Basic_Application/multi_media_sp_dev_api/RDK_X5/pydev_multimedia_api_x5/object_camera)
+
+## SQL / TiDB และ Dashboard รายบุคคล
+
+เพิ่ม Data API สำหรับเก็บผลรายบุคคลใน MySQL/TiDB และ Dashboard ที่อ่านจาก SQL:
+ยอดวันนี้, กราฟรายวัน/รายชั่วโมง, รายละเอียดวัน, ตัวกรองกล้อง/ประเภท และตารางแบ่งหน้า
+พร้อมคิวส่งซ้ำเมื่อเครือข่ายขาด โดยแยกจาก MurataWeb ทั้งระบบ
+
+ดูขั้นตอนตั้งค่าบน Linux และ TiDB ที่ **[docs/sql-dashboard.md](docs/sql-dashboard.md)**
+ต้องตั้ง `.env.server`, รัน `npm run data:migrate` แล้วเปิด `npm run data:dev`
+เพิ่มควบคู่กับบริการกล้องและเว็บเดิม ไม่มีรหัสผ่านฐานข้อมูลฝังใน frontend

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import http.client
 import multiprocessing as mp
 import threading
 import time
@@ -225,6 +226,9 @@ def create_handler(feed: MipiCameraFeed, web_root: Path):
 
         def do_GET(self) -> None:
             route = urlsplit(self.path).path
+            if route.startswith("/api/data/"):
+                self._proxy_data()
+                return
             if route == "/api/mipi/status":
                 self._send_json(feed.snapshot())
                 return
@@ -236,6 +240,9 @@ def create_handler(feed: MipiCameraFeed, web_root: Path):
 
         def do_POST(self) -> None:
             route = urlsplit(self.path).path
+            if route.startswith("/api/data/"):
+                self._proxy_data()
+                return
             if route == "/api/mipi/start":
                 feed.start_capture()
                 status = feed.wait_until_ready()
@@ -255,6 +262,32 @@ def create_handler(feed: MipiCameraFeed, web_root: Path):
                 return
 
             self._send_json({"error": "Not found"}, status=404)
+
+        def _proxy_data(self):
+            connection = http.client.HTTPConnection("127.0.0.1", 8787, timeout=15)
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length < 0 or length > 262144:
+                    self._send_json({"error": {"message": "Request too large"}}, 413)
+                    return
+                self.connection.settimeout(15)
+                body = self.rfile.read(length) if length else None
+                headers = {key: self.headers[key] for key in ("Authorization", "Content-Type", "Cookie") if key in self.headers}
+                connection.request(self.command, self.path, body=body, headers=headers)
+                response = connection.getresponse()
+                payload = response.read()
+                self.send_response(response.status)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(payload)))
+                if response.getheader("Set-Cookie"):
+                    self.send_header("Set-Cookie", response.getheader("Set-Cookie"))
+                self.end_headers()
+                self.wfile.write(payload)
+            except (OSError, ValueError, http.client.HTTPException):
+                self._send_json({"error": {"message": "Data API unavailable; run npm run data:dev"}}, 503)
+            finally:
+                connection.close()
 
         def _send_json(self, payload: dict[str, object], status: int = 200) -> None:
             body = json.dumps(payload).encode("utf-8")

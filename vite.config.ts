@@ -7,6 +7,10 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
+      "/api/data": {
+        target: `http://${process.env.DATA_API_HOST ?? "127.0.0.1"}:${process.env.DATA_API_PORT ?? "8787"}`,
+        changeOrigin: true,
+      },
       "/api/mipi": {
         target: "http://127.0.0.1:8765",
         changeOrigin: true,
