@@ -19,3 +19,10 @@ CREATE TABLE IF NOT EXISTS ai_camera_person_events (
   KEY idx_camera_time (camera_id, first_seen_ms),
   KEY idx_mode_time (attire_mode, first_seen_ms)
 );
+
+CREATE TABLE IF NOT EXISTS ai_camera_person_event_images (
+  event_id VARCHAR(160) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+  content_type VARCHAR(32) NOT NULL,
+  image_data MEDIUMBLOB NOT NULL,
+  created_at_ms BIGINT UNSIGNED NOT NULL
+);

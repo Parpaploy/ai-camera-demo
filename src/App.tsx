@@ -420,9 +420,11 @@ export default function App() {
       }
 
       let thumbnail: string;
+      let dashboardThumbnail: string;
 
       try {
         thumbnail = cropDetectionToDataUrl(source, det);
+        dashboardThumbnail = cropDetectionToDataUrl(source, det, 320, 0.65);
       } catch (err) {
         if (epoch !== analysisEpochRef.current || !trackerRef.current.hasTrack(trackId)) return;
         console.error(err);
@@ -442,6 +444,7 @@ export default function App() {
           attireModeRef.current,
         );
         if (epoch !== analysisEpochRef.current || !trackerRef.current.hasTrack(trackId)) return;
+        eventRecorderRef.current.attachThumbnail(trackId, dashboardThumbnail);
         const attire = parseAttireType(text);
         const gender = parseGenderType(text);
         const ageGroup = parseAgeGroupType(text);

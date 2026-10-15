@@ -24,7 +24,7 @@ export function putEvent(event: PersonEvent): Promise<void> {
     const request = store.get(event.eventId);
     request.onsuccess = () => {
       if (request.result) {
-        if (request.result.revision < event.revision) store.put(event);
+        if (request.result.revision < event.revision) store.put({ ...event, thumbnail: event.thumbnail ?? request.result.thumbnail });
         done(undefined);
       } else {
         const count = store.count();
@@ -36,9 +36,9 @@ export function putEvent(event: PersonEvent): Promise<void> {
     };
   });
 }
-export function readBatch(): Promise<PersonEvent[]> {
+export function readBatch(limit = 100): Promise<PersonEvent[]> {
   return transaction('readonly', (store, done) => {
-    const request = store.getAll(undefined, 100); request.onsuccess = () => done(request.result);
+    const request = store.getAll(undefined, limit); request.onsuccess = () => done(request.result);
   });
 }
 export function pendingCount(): Promise<number> {

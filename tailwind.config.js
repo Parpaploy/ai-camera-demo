@@ -12,7 +12,8 @@ export default {
       },
       fontFamily: {
         mono: ["'JetBrains Mono'", "ui-monospace", "SFMono-Regular", "monospace"],
-        sans: ["'Inter'", "ui-sans-serif", "system-ui", "sans-serif"],
+        sans: ["'IBM Plex Sans Thai'", "ui-sans-serif", "system-ui", "sans-serif"],
+        display: ["Manrope", "'IBM Plex Sans Thai'", "sans-serif"],
       },
     },
   },

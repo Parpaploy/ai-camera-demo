@@ -23,7 +23,10 @@ YOLO/Gemini ในเบราว์เซอร์
 ตาราง `ai_camera_person_events` เก็บ event ID, session ID, camera ID, track ID,
 track epoch, source, โหมดชุดนักศึกษา/แพทย์, เวลาพบครั้งแรก/ล่าสุด,
 ความมั่นใจ YOLO, ผลจำแนกชุด, เพศและช่วงอายุที่ AI ประเมิน, revision และเวลารับข้อมูล
-ไม่เก็บภาพ, thumbnail, Gemini prompt/คำบรรยาย หรือ API key ในตารางเหตุการณ์
+ตาราง `ai_camera_person_event_images` เก็บภาพ crop JPEG ที่ใช้วิเคราะห์ ขนาดไม่เกิน
+96 KiB ต่อเหตุการณ์ แยกจากตารางข้อมูลหลัก โดย Dashboard โหลดภาพผ่าน API ที่ต้อง
+ล็อกอินและกด thumbnail เพื่อขยายได้ ไม่เก็บภาพเต็มเฟรม, Gemini prompt/คำบรรยาย
+หรือ API key ภาพที่สร้างก่อนติดตั้งการเปลี่ยนแปลงนี้จะไม่มีไฟล์ crop ย้อนหลัง
 
 - หนึ่งแถวต่อ track ภายในหนึ่งรอบตรวจจับ ไม่ใช่หนึ่งแถวต่อเฟรม
 - รหัส `session:epoch:track` กันซ้ำ แม้ track เริ่มนับใหม่หลังปิด–เปิดกล้อง/รีเซ็ต
@@ -84,6 +87,9 @@ TiDB เป็นบริการฐานข้อมูล ส่วน Data
    ```bash
    npm run data:migrate
    ```
+
+   หลังอัปเดตโครงการบนเครื่องที่ใช้งานอยู่ ให้รันคำสั่งนี้อีกครั้งเพื่อสร้าง
+   ตารางเก็บภาพ crop เพิ่มเติม (ปลอดภัยต่อข้อมูลเหตุการณ์เดิม)
 
 5. เปิดเว็บและ Data API พร้อมกันด้วยคำสั่งเดียว:
 
@@ -150,9 +156,10 @@ origin จึงมีคิว/รหัสกล้องแยกกัน
 | Method | Path | หน้าที่ |
 |---|---|---|
 | GET | `/api/data/health` | ตรวจ key และ SQL connection |
-| POST | `/api/data/events` | รับ JSON `{ "events": [...] }` สูงสุด 100 events / 256 KiB |
+| POST | `/api/data/events` | รับ JSON `{ "events": [...] }` สูงสุด 100 events / 1 MiB; รูป crop JPEG สูงสุด 96 KiB ต่อ event |
 | GET | `/api/data/dashboard` | summary, time buckets, cameras, demographics, latest |
 | GET | `/api/data/events` | รายการพร้อม `total`, `page`, `size` |
+| GET | `/api/data/events/:eventId/image` | ส่งภาพ crop JPEG ของเหตุการณ์ (ต้องล็อกอิน) |
 
 GET รับ `from`, `to` เป็น `YYYY-MM-DD` (เวลาไทย), `camera`, `attireMode`,
 `source`, `gender`, `ageGroup`, `attire` (ซ้ำได้), `minConfidence`

@@ -32,8 +32,17 @@ export function validateBatch(body) {
     if (event.eventId !== expectedId) bad('eventId ไม่ตรงกับ session/track');
     if (event.firstSeen < 946684800000 || event.lastSeen < event.firstSeen || event.lastSeen > Date.now() + 300000) bad('เวลาของเหตุการณ์ไม่ถูกต้อง');
     if (typeof event.confidence !== 'number' || !Number.isFinite(event.confidence) || event.confidence < 0 || event.confidence > 1) bad('confidence ต้องอยู่ระหว่าง 0–1');
-    // Explicit allowlist: images, descriptions, and unknown fields are never stored.
-    return Object.fromEntries(['eventId', 'sessionId', 'cameraId', 'trackId', 'trackEpoch', 'source', 'attireMode', 'firstSeen', 'lastSeen', 'confidence', 'attire', 'gender', 'ageGroup', 'revision'].map(k => [k, event[k]]));
+    let thumbnail;
+    if (event.thumbnail !== undefined) {
+      if (typeof event.thumbnail !== 'string' || !/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(event.thumbnail)) bad('ภาพ crop ต้องเป็น JPEG base64');
+      const encoded = event.thumbnail.slice('data:image/jpeg;base64,'.length);
+      const image = Buffer.from(encoded, 'base64');
+      if (image.length < 4 || image.length > 96 * 1024 || image.toString('base64') !== encoded || image[0] !== 0xff || image[1] !== 0xd8 || image[2] !== 0xff) bad('ภาพ crop ต้องเป็น JPEG ไม่เกิน 96 KiB');
+      thumbnail = image;
+    }
+    const result = Object.fromEntries(['eventId', 'sessionId', 'cameraId', 'trackId', 'trackEpoch', 'source', 'attireMode', 'firstSeen', 'lastSeen', 'confidence', 'attire', 'gender', 'ageGroup', 'revision'].map(k => [k, event[k]]));
+    if (thumbnail) result.thumbnail = thumbnail;
+    return result;
   });
 }
 export function thaiDay(ms = Date.now()) { return new Date(ms + 7 * 3600000).toISOString().slice(0, 10); }
@@ -77,7 +86,8 @@ export function parseFilters(sp) {
 const COLUMNS = `event_id AS eventId, session_id AS sessionId, camera_id AS cameraId,
   track_id AS trackId, track_epoch AS trackEpoch, source, attire_mode AS attireMode,
   first_seen_ms AS firstSeen, last_seen_ms AS lastSeen, confidence, attire, gender,
-  age_group AS ageGroup, revision, received_at_ms AS receivedAt`;
+  age_group AS ageGroup, revision, received_at_ms AS receivedAt,
+  EXISTS (SELECT 1 FROM ai_camera_person_event_images img WHERE img.event_id = ai_camera_person_events.event_id) AS imageAvailable`;
 const TABLE = 'ai_camera_person_events';
 export function createStore(pool) {
   const query = async (sql, params = []) => (await pool.query({ sql, timeout: 10000 }, params))[0];
@@ -97,6 +107,13 @@ export function createStore(pool) {
         age_group = IF(VALUES(revision) > revision, VALUES(age_group), age_group),
         received_at_ms = IF(VALUES(revision) > revision, VALUES(received_at_ms), received_at_ms),
         revision = GREATEST(revision, VALUES(revision))`, [rows]);
+      const images = events.filter(e => e.thumbnail).map(e => [e.eventId, 'image/jpeg', e.thumbnail, Date.now()]);
+      if (images.length) await query(`INSERT IGNORE INTO ai_camera_person_event_images (event_id, content_type, image_data, created_at_ms) VALUES ?`, [images]);
+    },
+    async image(eventId) {
+      const rows = await query('SELECT content_type AS contentType, image_data AS imageData FROM ai_camera_person_event_images WHERE event_id = ? LIMIT 1', [eventId]);
+      if (!rows.length) return null;
+      return { contentType: rows[0].contentType, imageData: Buffer.from(rows[0].imageData) };
     },
     async dashboard(sp) {
       const f = parseFilters(sp);

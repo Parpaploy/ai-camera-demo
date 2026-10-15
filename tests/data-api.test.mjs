@@ -7,10 +7,10 @@ const event = { eventId: 'test:0:1', sessionId: 'test', cameraId: 'rdk-01', trac
   source: 'camera', attireMode: 'student', firstSeen: now - 5000, lastSeen: now,
   confidence: .91, attire: 'target', gender: 'uncertain', ageGroup: 'adult', revision: 1 };
 
-test('validate events and exclude images/unknown fields', () => {
-  const [result] = validateBatch({ events: [{ ...event, thumbnail: 'private-image' }] });
-  assert.equal(result.thumbnail, undefined);
-  for (const override of [{ confidence: NaN }, { revision: -1 }, { eventId: 'wrong' }, { cameraId: "' OR 1=1" }, { lastSeen: now - 9000 }, { attire: 'phone' }]) {
+test('validate events and retain bounded JPEG crops only', () => {
+  const [result] = validateBatch({ events: [{ ...event, thumbnail: 'data:image/jpeg;base64,/9j/2Q==' }] });
+  assert.deepEqual(result.thumbnail, Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+  for (const override of [{ confidence: NaN }, { revision: -1 }, { eventId: 'wrong' }, { cameraId: "' OR 1=1" }, { lastSeen: now - 9000 }, { attire: 'phone' }, { thumbnail: 'private-image' }]) {
     assert.throws(() => validateBatch({ events: [{ ...event, ...override }] }));
   }
   assert.throws(() => validateBatch({ events: Array(101).fill(event) }));

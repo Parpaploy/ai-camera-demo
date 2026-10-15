@@ -62,12 +62,19 @@ export function createApiServer({ store, accessKey, adminPassword = process.env.
       if (req.method === 'GET' && url.pathname === '/api/data/health') {
         await store.health(); send(200, { data: { status: 'ok' } }); return;
       }
+      const imageMatch = req.method === 'GET' && url.pathname.match(/^\/api\/data\/events\/([A-Za-z0-9_.:-]{1,160})\/image$/);
+      if (imageMatch) {
+        const image = await store.image(imageMatch[1]);
+        if (!image) { send(404, { error: { message: 'ไม่พบภาพ crop ของเหตุการณ์นี้' } }); return; }
+        res.writeHead(200, { 'Content-Type': image.contentType, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Length': image.imageData.length });
+        res.end(image.imageData); return;
+      }
       if (req.method === 'POST' && url.pathname === '/api/data/events') {
         if (!req.headers['content-type']?.startsWith('application/json')) throw new ApiError(415, 'ต้องส่ง JSON');
         const chunks = []; let size = 0;
         for await (const chunk of req) {
           size += chunk.length;
-          if (size > 262144) throw new ApiError(413, 'ข้อมูลเกิน 256 KiB');
+          if (size > 1048576) throw new ApiError(413, 'ข้อมูลเกิน 1 MiB');
           chunks.push(chunk);
         }
         let body;

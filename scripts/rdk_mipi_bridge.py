@@ -267,7 +267,7 @@ def create_handler(feed: MipiCameraFeed, web_root: Path):
             connection = http.client.HTTPConnection("127.0.0.1", 8787, timeout=15)
             try:
                 length = int(self.headers.get("Content-Length", "0"))
-                if length < 0 or length > 262144:
+                if length < 0 or length > 1048576:
                     self._send_json({"error": {"message": "Request too large"}}, 413)
                     return
                 self.connection.settimeout(15)
@@ -277,7 +277,7 @@ def create_handler(feed: MipiCameraFeed, web_root: Path):
                 response = connection.getresponse()
                 payload = response.read()
                 self.send_response(response.status)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Type", response.getheader("Content-Type", "application/json; charset=utf-8"))
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("Content-Length", str(len(payload)))
                 if response.getheader("Set-Cookie"):

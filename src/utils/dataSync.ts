@@ -59,7 +59,8 @@ export function queuePersonEvent(event: PersonEvent) {
   if (staged.size >= 1000 && !staged.has(event.eventId)) {
     publish({ dropped: state.dropped + 1, storageError: 'คิวในหน่วยความจำเต็ม บางเหตุการณ์ยังบันทึกไม่ได้ กรุณาตรวจพื้นที่จัดเก็บ' }); return;
   }
-  staged.set(event.eventId, event); void drain();
+  const previous = staged.get(event.eventId);
+  staged.set(event.eventId, previous && !event.thumbnail ? { ...event, thumbnail: previous.thumbnail } : event); void drain();
 }
 async function drain() {
   if (draining) return;
@@ -81,7 +82,7 @@ export async function flushEvents() {
   flushing = true;
   publish({ sending: true });
   try {
-    const batch = await readBatch();
+    const batch = await readBatch(4);
     if (batch.length) {
       const result = await dataRequest<{ accepted: { eventId: string; revision: number }[] }>('/events', { method: 'POST', body: JSON.stringify({ events: batch }) });
       if (!Array.isArray(result.accepted) || result.accepted.length !== batch.length || batch.some(e => !result.accepted.some(a => a.eventId === e.eventId && a.revision === e.revision))) throw new Error('เซิร์ฟเวอร์ยังยืนยันข้อมูลไม่ครบ จะเก็บคิวไว้และลองใหม่');

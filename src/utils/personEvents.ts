@@ -5,7 +5,7 @@ export interface PersonEvent {
   eventId: string; sessionId: string; cameraId: string; trackId: number; trackEpoch: number;
   source: 'camera' | 'image'; attireMode: AttireDetectionMode; firstSeen: number; lastSeen: number;
   confidence: number; attire: AttireType | 'unclassified'; gender: GenderType;
-  ageGroup: AgeGroupType; revision: number; receivedAt?: number;
+  ageGroup: AgeGroupType; revision: number; receivedAt?: number; thumbnail?: string; imageAvailable?: boolean;
 }
 export type EventCounts = Record<PersonEvent['attire'], number>;
 export interface EventBucket extends EventCounts { key: string; date: string }
@@ -20,7 +20,7 @@ export interface EventPage { rows: PersonEvent[]; total: number; page: number; s
 
 // One record per track per session, never one record per video frame.
 export class PersonEventRecorder {
-  private active = new Map<number, { event: PersonEvent; sentAt: number }>();
+  private active = new Map<number, { event: PersonEvent; sentAt: number; thumbnailAttached: boolean }>();
   private session: { id: string; cameraId: string; source: PersonEvent['source']; mode: AttireDetectionMode } | null = null;
   private epoch = 0;
   constructor(private enqueue: (event: PersonEvent) => void, private now = Date.now) {}
@@ -29,7 +29,10 @@ export class PersonEventRecorder {
   }
   resetTracks() { this.flushActive(); this.active.clear(); this.epoch++; }
   private publish(item: { event: PersonEvent; sentAt: number }) {
-    item.event.revision++; item.sentAt = this.now(); this.enqueue({ ...item.event });
+    item.event.revision++; item.sentAt = this.now();
+    const snapshot = { ...item.event };
+    delete item.event.thumbnail;
+    this.enqueue(snapshot);
   }
   observe(people: TrackedDetection[], hasTrack: (id: number) => boolean) {
     if (!this.session) return;
@@ -38,7 +41,7 @@ export class PersonEventRecorder {
     for (const person of people) {
       let item = this.active.get(person.trackId);
       if (!item) {
-        item = { sentAt: 0, event: {
+        item = { sentAt: 0, thumbnailAttached: false, event: {
           eventId: `${s.id}:${this.epoch}:${person.trackId}`, sessionId: s.id, cameraId: s.cameraId,
           trackId: person.trackId, trackEpoch: this.epoch, source: s.source, attireMode: s.mode,
           firstSeen: now, lastSeen: now, confidence: person.score, attire: 'unclassified',
@@ -57,6 +60,13 @@ export class PersonEventRecorder {
     item.event.attire = description.attire;
     item.event.gender = description.gender ?? 'uncertain';
     item.event.ageGroup = description.ageGroup ?? 'uncertain';
+    this.publish(item);
+  }
+  attachThumbnail(trackId: number, thumbnail: string) {
+    const item = this.active.get(trackId);
+    if (!item || item.thumbnailAttached) return;
+    item.thumbnailAttached = true;
+    item.event.thumbnail = thumbnail;
     this.publish(item);
   }
   private flushActive() { for (const item of this.active.values()) this.publish(item); }

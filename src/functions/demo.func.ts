@@ -65,6 +65,7 @@ export function cropDetectionToDataUrl(
   source: HTMLImageElement | HTMLVideoElement,
   det: Detection,
   maxDim = 512,
+  quality = 0.85,
 ): string {
   const [x, y, w, h] = det.box;
 
@@ -108,7 +109,7 @@ export function cropDetectionToDataUrl(
     canvas.height,
   );
 
-  return canvas.toDataURL("image/jpeg", 0.85);
+  return canvas.toDataURL("image/jpeg", quality);
 }
 
 export function parseDataUrl(dataUrl: string): {
