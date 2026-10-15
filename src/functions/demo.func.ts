@@ -176,6 +176,9 @@ export async function getOllamaModels(): Promise<OllamaModel[]> {
   const response = await fetch("/api/ai/ollama/models", { cache: "no-store" });
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
+    if (response.status === 401) {
+      throw new Error("Data API ที่ทำงานอยู่ยังไม่มี Ollama API (อาจเป็นโปรเซสเก่า) ให้หยุดแล้วเริ่ม npm run dev ใหม่");
+    }
     throw new Error(result?.error?.message || "ติดต่อ Ollama ไม่ได้");
   }
   return Array.isArray(result?.data?.models) ? result.data.models : [];
