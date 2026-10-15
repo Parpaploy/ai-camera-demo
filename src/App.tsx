@@ -28,6 +28,8 @@ import {
   cropDetectionToDataUrl,
   describePersonImage,
   describePersonImages,
+  describePersonImagesWithOllama,
+  getOllamaModels,
   drawBoxes,
   drawImageDetections,
   getAttireClass,
@@ -36,7 +38,7 @@ import {
   parseAttireType,
   parseGenderType,
 } from "./functions/demo.func";
-import type { BoxColorResolver, PersonImageFrame } from "./functions/demo.func";
+import type { BoxColorResolver, OllamaModel, PersonImageFrame } from "./functions/demo.func";
 import Dashboard from "./components/Dashboard";
 import { PersonEventRecorder } from "./utils/personEvents";
 import { getCameraId, queuePersonEvent, startDataSync } from "./utils/dataSync";
@@ -229,6 +231,13 @@ export default function App() {
   });
   const apiKeyRef = useRef(apiKey);
   apiKeyRef.current = apiKey;
+  const [aiProvider, setAiProvider] = useState<"gemini" | "ollama">("gemini");
+  const aiProviderRef = useRef(aiProvider);
+  aiProviderRef.current = aiProvider;
+  const [ollamaModels, setOllamaModels] = useState<OllamaModel[]>([]);
+  const [ollamaModel, setOllamaModel] = useState("qwen3.5:2b");
+  const [ollamaStatus, setOllamaStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [ollamaError, setOllamaError] = useState("");
 
   const [showApiKeyInput, setShowApiKeyInput] = useState(false);
 
@@ -268,7 +277,7 @@ export default function App() {
   const cameraLoopActiveRef = useRef(false);
   const activeCameraSourceRef = useRef<CameraSource>("browser");
   const runningRef = useRef(false);
-  const geminiRunningRef = useRef(false);
+  const aiAnalysisRunningRef = useRef(false);
   const personFrameQueuesRef = useRef(new Map<number, PersonFrameQueue>());
   const leftPanelRef = useRef<HTMLDivElement>(null);
 
@@ -357,6 +366,31 @@ export default function App() {
   }, [apiKey]);
 
   useEffect(() => {
+    if (aiProvider !== "ollama") return;
+    let active = true;
+    setOllamaStatus("loading");
+    setOllamaError("");
+    getOllamaModels()
+      .then((models) => {
+        if (!active) return;
+        setOllamaModels(models);
+        setOllamaModel((current) =>
+          models.some((model) => model.name === current)
+            ? current
+            : models.find((model) => model.name === "qwen3.5:2b")?.name ?? models[0]?.name ?? "",
+        );
+        setOllamaStatus(models.length ? "ready" : "error");
+        if (!models.length) setOllamaError("ไม่พบโมเดลใน Ollama");
+      })
+      .catch((error) => {
+        if (!active) return;
+        setOllamaStatus("error");
+        setOllamaError(error instanceof Error ? error.message : "ติดต่อ Ollama ไม่ได้");
+      });
+    return () => { active = false; };
+  }, [aiProvider]);
+
+  useEffect(() => {
     setPersonDescriptions({});
     personDescriptionsRef.current = {};
     imageHistorySessionRef.current = null;
@@ -424,7 +458,7 @@ export default function App() {
       if (!trackerRef.current.hasTrack(trackId)) return;
       const currentApiKey = apiKey.trim();
 
-      if (!currentApiKey) {
+      if (aiProvider === "gemini" && !currentApiKey) {
         setShowApiKeyInput(true);
         updatePersonDescription(trackId, {
           loading: false,
@@ -452,9 +486,14 @@ export default function App() {
       updatePersonDescription(trackId, { loading: true, thumbnail });
 
       try {
-        const text = queuedFrames?.length
-          ? await describePersonImages(queuedFrames, currentApiKey, attireModeRef.current)
-          : await describePersonImage(thumbnail, currentApiKey, attireModeRef.current);
+        const frames = queuedFrames?.length
+          ? queuedFrames
+          : [{ dataUrl: thumbnail, frameIndex: 1, elapsedMs: 0 }];
+        const text = aiProvider === "ollama"
+          ? await describePersonImagesWithOllama(frames, ollamaModel, attireModeRef.current)
+          : frames.length > 1
+            ? await describePersonImages(frames, currentApiKey, attireModeRef.current)
+            : await describePersonImage(thumbnail, currentApiKey, attireModeRef.current);
         if (epoch !== analysisEpochRef.current || !trackerRef.current.hasTrack(trackId)) return;
         eventRecorderRef.current.attachThumbnail(trackId, dashboardThumbnail);
         const attire = parseAttireType(text);
@@ -481,11 +520,11 @@ export default function App() {
           error:
             err instanceof Error
               ? err.message
-              : "เกิดข้อผิดพลาดจาก Gemini API",
+              : `เกิดข้อผิดพลาดจาก ${aiProvider === "ollama" ? "Ollama" : "Gemini API"}`,
         });
       }
     },
-    [apiKey, updatePersonDescription],
+    [aiProvider, apiKey, ollamaModel, updatePersonDescription],
   );
 
   const analyzeAllPeople = useCallback(
@@ -497,12 +536,20 @@ export default function App() {
       const people = results.filter((det) => det.classId === PERSON_CLASS_ID());
       if (people.length === 0) return;
 
-      if (!apiKey.trim()) {
+      if (aiProvider === "gemini" && !apiKey.trim()) {
         setShowApiKeyInput(true);
         return;
       }
 
-      if (geminiRunningRef.current) return;
+      if (aiProvider === "ollama" && (ollamaStatus !== "ready" || !ollamaModel)) {
+        updatePersonDescription(people[0].trackId, {
+          loading: false,
+          error: ollamaError || "กำลังเชื่อมต่อ Ollama หรือยังไม่มีโมเดลให้เลือก",
+        });
+        return;
+      }
+
+      if (aiAnalysisRunningRef.current) return;
 
       const toAnalyze = people.filter(
         (det) => {
@@ -515,7 +562,7 @@ export default function App() {
       if (toAnalyze.length === 0) return;
 
       const epoch = analysisEpochRef.current;
-      geminiRunningRef.current = true;
+      aiAnalysisRunningRef.current = true;
 
       try {
         for (const det of toAnalyze) {
@@ -526,10 +573,10 @@ export default function App() {
           await analyzePerson(source, det, det.trackId, frames);
         }
       } finally {
-        geminiRunningRef.current = false;
+        aiAnalysisRunningRef.current = false;
       }
     },
-    [apiKey, analyzePerson],
+    [aiProvider, apiKey, ollamaError, ollamaModel, ollamaStatus, analyzePerson, updatePersonDescription],
   );
 
   const handleFile = useCallback((file: File | undefined) => {
@@ -760,7 +807,7 @@ export default function App() {
       for (const trackId of personFrameQueuesRef.current.keys()) {
         if (!trackerRef.current.hasTrack(trackId)) personFrameQueuesRef.current.delete(trackId);
       }
-      if (apiKeyRef.current.trim()) {
+      if (aiProviderRef.current === "ollama" || apiKeyRef.current.trim()) {
         for (const det of trackedPeople) {
           if (trackerRef.current.isAnalyzed(det.trackId)) {
             personFrameQueuesRef.current.delete(det.trackId);
@@ -834,7 +881,7 @@ export default function App() {
       setStatus("done");
       setErrorMsg("");
 
-      if (!geminiRunningRef.current) void analyzeAllPeople(source, tracked, true);
+      if (!aiAnalysisRunningRef.current) void analyzeAllPeople(source, tracked, true);
     } catch (err) {
       if (!isCurrent()) return;
       console.error(err);
@@ -1133,10 +1180,10 @@ export default function App() {
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4">
           <div>
             <p className="font-mono text-xs uppercase tracking-[0.2em] text-accent">
-              client-side inference
+              browser detection · selectable vision AI
             </p>
             <h1 className="text-xl font-semibold">
-              YOLOv8 · Gemini Attire Detection
+              YOLOv8 · AI Attire Detection
             </h1>
           </div>
 
@@ -1168,17 +1215,39 @@ export default function App() {
                 ตรวจจับ
               </button>
             </nav>
-            <button
-              onClick={() => setShowApiKeyInput((v) => !v)}
-              className="font-mono text-xs text-slate-400 hover:text-accent"
-            >
-              onnxruntime-web ·{" "}
-              {apiKey ? "Gemini API key ✓" : "ตั้งค่า Gemini API key"}
-            </button>
+            <label className="flex items-center gap-2 text-xs text-slate-400">
+              AI
+              <select
+                value={aiProvider}
+                onChange={(event) => {
+                  const next = event.target.value as "gemini" | "ollama";
+                  setAiProvider(next);
+                  if (next === "gemini" && !apiKey.trim()) setShowApiKeyInput(true);
+                }}
+                className="rounded-md border border-line bg-panel px-3 py-2 text-sm text-slate-200 outline-none focus:border-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+                aria-label="เลือก AI สำหรับวิเคราะห์ภาพ"
+              >
+                <option value="gemini">Gemini</option>
+                <option value="ollama">Ollama</option>
+              </select>
+            </label>
+            {aiProvider === "gemini" ? (
+              <button
+                onClick={() => setShowApiKeyInput((value) => !value)}
+                className="font-mono text-xs text-slate-400 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+              >
+                {apiKey ? "Gemini API key ✓" : "ตั้งค่า Gemini API key"}
+              </button>
+            ) : (
+              <span className="font-mono text-xs text-slate-400" role="status">
+                {ollamaStatus === "loading" ? "กำลังเชื่อม Ollama…" :
+                  ollamaStatus === "ready" ? `Ollama · ${ollamaModel}` : "Ollama ยังไม่พร้อม"}
+              </span>
+            )}
           </div>
         </div>
 
-        {showApiKeyInput && (
+        {showApiKeyInput && aiProvider === "gemini" && (
           <div className="mx-auto mt-3 flex max-w-6xl flex-wrap items-center gap-2">
             <input
               type="password"
@@ -1210,6 +1279,32 @@ export default function App() {
                 ? "มี API key จาก .env · ค่าที่กรอกเองจะ override"
                 : "ไม่พบ API key ใน .env · กรุณากรอกเอง"}
             </span>
+          </div>
+        )}
+        {aiProvider === "ollama" && (
+          <div className="mx-auto mt-3 flex max-w-6xl flex-wrap items-center gap-3" aria-live="polite">
+            <label className="flex items-center gap-2 text-xs text-slate-400">
+              โมเดล Ollama
+              <select
+                value={ollamaModel}
+                onChange={(event) => setOllamaModel(event.target.value)}
+                disabled={ollamaStatus !== "ready" || !ollamaModels.length}
+                className="max-w-64 rounded-md border border-line bg-panel px-3 py-1.5 text-xs text-slate-200 outline-none focus:border-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {ollamaModels.length ? ollamaModels.map((model) => (
+                  <option key={model.name} value={model.name}>{model.name}</option>
+                )) : <option value="">ไม่พบโมเดล</option>}
+              </select>
+            </label>
+            {ollamaStatus === "error" ? (
+              <span className="text-xs text-warn" role="alert">
+                {ollamaError} · ตรวจ OLLAMA_BASE_URL ใน .env.server
+              </span>
+            ) : (
+              <span className="text-xs text-slate-500">
+                ใช้โมเดลที่รองรับภาพ เช่น qwen3.5:2b · ไม่ต้องใช้ API key
+              </span>
+            )}
           </div>
         )}
       </header>
@@ -1386,7 +1481,7 @@ export default function App() {
                     {inferenceMs !== null && `${inferenceMs.toFixed(0)}ms · `}
                     {detections.length} objects · ติดตาม{" "}
                     {trackerRef.current.activeTrackCount} track · YOLO ทุก{" "}
-                    {CAMERA_DETECT_INTERVAL_MS}ms · Gemini เมื่อครบ{" "}
+                    {CAMERA_DETECT_INTERVAL_MS}ms · {aiProvider === "ollama" ? "Ollama" : "Gemini"} เมื่อครบ{" "}
                     {PERSON_QUEUE_FRAME_COUNT} เฟรม/คน
                   </span>
                 )}
@@ -1799,7 +1894,7 @@ export default function App() {
                                 <div className="min-w-0 flex-1">
                                   {desc.loading && (
                                     <p className="text-xs text-slate-500">
-                                      กำลังวิเคราะห์การแต่งกายด้วย Gemini...
+                                      กำลังวิเคราะห์การแต่งกายด้วย {aiProvider === "ollama" ? "Ollama" : "Gemini"}...
                                     </p>
                                   )}
                                   {desc.error && (

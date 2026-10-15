@@ -44,6 +44,20 @@ async function waitForApi(child) {
   throw new Error(`Data API did not listen on ${host}:${port}`);
 }
 
+async function supportsOllamaApi() {
+  try {
+    const response = await fetch(`http://${host}:${port}/api/ai/ollama/models`, {
+      signal: AbortSignal.timeout(1500),
+    });
+    // The current API returns 200 when Ollama responds, or 503 when the
+    // Ollama endpoint itself is unreachable. A 401/404 means this is an old
+    // Data API process that does not know the Ollama routes.
+    return response.status === 200 || response.status === 503;
+  } catch {
+    return false;
+  }
+}
+
 function shutdown(code = 0) {
   if (stopping) return;
   stopping = true;
@@ -59,12 +73,15 @@ try {
     api = launch(['--env-file=.env.server', 'server/index.mjs'], 'Data API');
     await waitForApi(api);
   } else {
+    if (!(await supportsOllamaApi())) {
+      throw new Error(`Data API on ${host}:${port} does not expose the Ollama routes. Stop the old Data API process, then run npm run dev again.`);
+    }
     console.log(`Using Data API already listening on ${host}:${port}`);
   }
   if (stopping) process.exit(0);
   vite = launch(['node_modules/vite/bin/vite.js', ...process.argv.slice(2)], 'Vite');
 } catch (error) {
   console.error(`Cannot start dashboard: ${error.message}`);
-  console.error('Check that .env.server exists, contains TiDB and admin settings, and port 8787 is available.');
+  console.error('Check that .env.server exists, contains TiDB/admin/Ollama settings, and port 8787 is available.');
   shutdown(1);
 }
