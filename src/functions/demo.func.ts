@@ -166,6 +166,51 @@ export interface PersonImageFrame {
   elapsedMs: number;
 }
 
+export interface OllamaModel {
+  name: string;
+  size: number;
+  details: Record<string, unknown>;
+}
+
+export async function getOllamaModels(): Promise<OllamaModel[]> {
+  const response = await fetch("/api/ai/ollama/models", { cache: "no-store" });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(result?.error?.message || "ติดต่อ Ollama ไม่ได้");
+  }
+  return Array.isArray(result?.data?.models) ? result.data.models : [];
+}
+
+export async function describePersonImagesWithOllama(
+  frames: PersonImageFrame[],
+  model: string,
+  mode: AttireDetectionMode = "student",
+): Promise<string> {
+  if (frames.length === 0) throw new Error("ไม่มีภาพในคิวสำหรับวิเคราะห์");
+  const prompt =
+    `${buildAttirePrompt(mode)}\n` +
+    `ภาพต่อไปนี้เป็นลำดับเฟรมของบุคคลคนเดียวกัน จำนวน ${frames.length} ภาพ\n` +
+    frames
+      .map((frame) => `เฟรม ${frame.frameIndex} (หลังเริ่มพบ ${Math.round(frame.elapsedMs)} ms)`)
+      .join("\n") +
+    "\nใช้ทุกเฟรมประกอบกัน ถ้าบางเฟรมเบลอหรือถูกบังให้ดูเฟรมอื่น และตอบตามรูปแบบ tag ที่กำหนดเท่านั้น";
+  const images = frames.map((frame) => parseDataUrl(frame.dataUrl).data);
+  const response = await fetch("/api/ai/ollama/analyze", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    signal: AbortSignal.timeout(120_000),
+    body: JSON.stringify({ model, prompt, images }),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(result?.error?.message || `Ollama HTTP ${response.status}`);
+  }
+  if (typeof result?.data?.text !== "string" || !result.data.text.trim()) {
+    throw new Error("Ollama ไม่ได้ส่งคำอธิบายกลับมา");
+  }
+  return result.data.text.trim();
+}
+
 export async function describePersonImages(
   frames: PersonImageFrame[],
   apiKey: string,

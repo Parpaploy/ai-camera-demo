@@ -9,6 +9,8 @@ export function createApiServer({ store, accessKey, adminPassword = process.env.
   if (!adminPassword || adminPassword.length < 16) throw new Error('DASHBOARD_ADMIN_PASSWORD must contain at least 16 characters');
   const sessions = new Map();
   const attempts = new Map();
+  const ollamaBaseUrl = (process.env.OLLAMA_BASE_URL ?? 'http://127.0.0.1:11434').replace(/\/$/, '');
+  let ollamaModelsCache = { at: 0, models: [] };
   const sameSecret = (a, b) => {
     const left = createHash('sha256').update(a).digest();
     const right = createHash('sha256').update(b).digest();
@@ -55,6 +57,71 @@ export function createApiServer({ store, accessKey, adminPassword = process.env.
         if (pair) sessions.delete(pair.slice(cookieName.length + 1));
         res.setHeader('Set-Cookie', `${cookieName}=; Path=/api/data; HttpOnly; SameSite=Strict; Max-Age=0`);
         send(200, { data: { authenticated: false } }); return;
+      }
+      if (url.pathname === '/api/ai/ollama/models' && req.method === 'GET') {
+        try {
+          if (Date.now() - ollamaModelsCache.at > 10_000) {
+            const response = await fetch(`${ollamaBaseUrl}/api/tags`, { signal: AbortSignal.timeout(5000) });
+            if (!response.ok) throw new Error(`Ollama HTTP ${response.status}`);
+            const body = await response.json();
+            ollamaModelsCache = {
+              at: Date.now(),
+              models: Array.isArray(body.models)
+                ? body.models.filter(model => typeof model?.name === 'string').map(model => ({
+                    name: model.name,
+                    size: Number(model.size) || 0,
+                    details: model.details ?? {},
+                  }))
+                : [],
+            };
+          }
+          send(200, { data: { models: ollamaModelsCache.models } }); return;
+        } catch {
+          send(503, { error: { message: 'ติดต่อ Ollama ไม่ได้ ตรวจ OLLAMA_BASE_URL และบริการพอร์ต 11434' } }); return;
+        }
+      }
+      if (url.pathname === '/api/ai/ollama/analyze' && req.method === 'POST') {
+        const chunks = []; let size = 0;
+        for await (const chunk of req) {
+          size += chunk.length;
+          if (size > 4 * 1024 * 1024) throw new ApiError(413, 'ภาพในคิวมีขนาดใหญ่เกิน 4 MiB');
+          chunks.push(chunk);
+        }
+        let body;
+        try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+        catch { throw new ApiError(400, 'JSON ไม่ถูกต้อง'); }
+        if (typeof body?.model !== 'string' || body.model.length > 128 ||
+            typeof body?.prompt !== 'string' || body.prompt.length > 6000 ||
+            !Array.isArray(body?.images) || body.images.length < 1 || body.images.length > 4 ||
+            body.images.some(image => typeof image !== 'string' || image.length > 2_000_000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(image))) {
+          throw new ApiError(400, 'ข้อมูลโมเดลหรือภาพไม่ถูกต้อง');
+        }
+        try {
+          const response = await fetch(`${ollamaBaseUrl}/api/chat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: AbortSignal.timeout(120_000),
+            body: JSON.stringify({
+              model: body.model,
+              messages: [{ role: 'user', content: body.prompt, images: body.images }],
+              stream: false,
+              options: { temperature: 0.1 },
+            }),
+          });
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            send(response.status >= 500 ? 502 : response.status, {
+              error: { message: result.error || `Ollama HTTP ${response.status}` },
+            }); return;
+          }
+          const text = result?.message?.content;
+          if (typeof text !== 'string' || !text.trim()) {
+            send(502, { error: { message: 'Ollama ไม่ได้ส่งคำตอบกลับมา' } }); return;
+          }
+          send(200, { data: { text } }); return;
+        } catch {
+          send(503, { error: { message: 'เรียก Ollama ไม่สำเร็จ ตรวจการเชื่อมต่อและโมเดลที่เลือก' } }); return;
+        }
       }
       if (!getSession(req) && !authorized(req.headers.authorization, accessKey)) {
         throw new ApiError(401, 'กรุณาเข้าสู่ระบบผู้ดูแล');

@@ -226,7 +226,7 @@ def create_handler(feed: MipiCameraFeed, web_root: Path):
 
         def do_GET(self) -> None:
             route = urlsplit(self.path).path
-            if route.startswith("/api/data/"):
+            if route.startswith("/api/data/") or route.startswith("/api/ai/"):
                 self._proxy_data()
                 return
             if route == "/api/mipi/status":
@@ -240,7 +240,7 @@ def create_handler(feed: MipiCameraFeed, web_root: Path):
 
         def do_POST(self) -> None:
             route = urlsplit(self.path).path
-            if route.startswith("/api/data/"):
+            if route.startswith("/api/data/") or route.startswith("/api/ai/"):
                 self._proxy_data()
                 return
             if route == "/api/mipi/start":
@@ -264,13 +264,15 @@ def create_handler(feed: MipiCameraFeed, web_root: Path):
             self._send_json({"error": "Not found"}, status=404)
 
         def _proxy_data(self):
-            connection = http.client.HTTPConnection("127.0.0.1", 8787, timeout=15)
+            timeout = 120 if self.path.startswith("/api/ai/") else 15
+            max_body_size = 4 * 1024 * 1024 if self.path.startswith("/api/ai/") else 1048576
+            connection = http.client.HTTPConnection("127.0.0.1", 8787, timeout=timeout)
             try:
                 length = int(self.headers.get("Content-Length", "0"))
-                if length < 0 or length > 1048576:
+                if length < 0 or length > max_body_size:
                     self._send_json({"error": {"message": "Request too large"}}, 413)
                     return
-                self.connection.settimeout(15)
+                self.connection.settimeout(timeout)
                 body = self.rfile.read(length) if length else None
                 headers = {key: self.headers[key] for key in ("Authorization", "Content-Type", "Cookie") if key in self.headers}
                 connection.request(self.command, self.path, body=body, headers=headers)
