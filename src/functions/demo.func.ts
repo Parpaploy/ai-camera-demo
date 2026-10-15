@@ -157,9 +157,38 @@ export async function describePersonImage(
   apiKey: string,
   mode: AttireDetectionMode = "student",
 ): Promise<string> {
-  const { mimeType, data } = parseDataUrl(dataUrl);
+  return describePersonImages([{ dataUrl, frameIndex: 1, elapsedMs: 0 }], apiKey, mode);
+}
+
+export interface PersonImageFrame {
+  dataUrl: string;
+  frameIndex: number;
+  elapsedMs: number;
+}
+
+export async function describePersonImages(
+  frames: PersonImageFrame[],
+  apiKey: string,
+  mode: AttireDetectionMode = "student",
+): Promise<string> {
+  if (frames.length === 0) throw new Error("ไม่มีภาพในคิวสำหรับวิเคราะห์");
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+  const parts = [
+    {
+      text:
+        `${buildAttirePrompt(mode)}\n` +
+        `ภาพต่อไปนี้เป็นลำดับเฟรมของบุคคลคนเดียวกัน จำนวน ${frames.length} ภาพ ` +
+        "ให้ใช้ข้อมูลจากทุกเฟรมประกอบกัน หากบางเฟรมเบลอหรือบัง ให้พิจารณาเฟรมอื่นด้วย ไม่ต้องบรรยายความเปลี่ยนแปลงระหว่างเฟรม",
+    },
+    ...frames.flatMap((frame) => {
+      const { mimeType, data } = parseDataUrl(frame.dataUrl);
+      return [
+        { text: `เฟรม ${frame.frameIndex} (หลังเริ่มพบ ${Math.round(frame.elapsedMs)} ms)` },
+        { inlineData: { mimeType, data } },
+      ];
+    }),
+  ];
 
   const response = await fetch(url, {
     signal: AbortSignal.timeout(30000),
@@ -171,10 +200,7 @@ export async function describePersonImage(
     body: JSON.stringify({
       contents: [
         {
-          parts: [
-            { inlineData: { mimeType, data } },
-            { text: buildAttirePrompt(mode) },
-          ],
+          parts,
         },
       ],
       generationConfig: { maxOutputTokens: 200 },

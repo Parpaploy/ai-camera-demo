@@ -1,0 +1,142 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="1500" viewBox="0 0 1500 1500" role="img" aria-labelledby="title desc">
+  <title id="title">Flowchart ระบบตรวจจับบุคคลของ ai-camera</title>
+  <desc id="desc">จากกล้อง MIPI หรือรูปภาพ ผ่าน YOLO และ Track ID เก็บภาพ crop สองเฟรมพร้อมลำดับและเวลา ส่งคิวให้ Gemini หนึ่ง request ต่อคน แล้วบันทึกผลเป็น event เดียวใน TiDB</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#52718a"/></marker>
+    <marker id="arrowTeal" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#0f9886"/></marker>
+    <style>
+      text { font-family: "IBM Plex Sans Thai", "Noto Sans Thai", Arial, sans-serif; fill: #172b3a; }
+      .title { font-size: 34px; font-weight: 700; }
+      .subtitle { font-size: 17px; fill: #536879; }
+      .lane-title { font-size: 20px; font-weight: 700; }
+      .label { font-size: 17px; font-weight: 700; }
+      .body { font-size: 15px; fill: #41586a; }
+      .small { font-size: 13px; fill: #536879; }
+      .tag { font-size: 13px; font-weight: 700; }
+      .line { fill: none; stroke: #52718a; stroke-width: 3; marker-end: url(#arrow); }
+      .teal { fill: none; stroke: #0f9886; stroke-width: 3; marker-end: url(#arrowTeal); }
+      .dash { fill: none; stroke: #8498a7; stroke-width: 2.5; stroke-dasharray: 8 7; marker-end: url(#arrow); }
+      .box { fill: white; stroke-width: 2; }
+    </style>
+  </defs>
+  <rect width="1500" height="1500" fill="#f4f8fa"/>
+  <text x="48" y="60" class="title">ระบบตรวจจับ → วิเคราะห์ด้วย Gemini → บันทึกหลังบ้าน</text>
+  <text x="50" y="92" class="subtitle">หนึ่ง Track ID ต่อคนใน session · รวม crop 2 เฟรมพร้อมเวลาให้ Gemini ก่อนบันทึกผล</text>
+
+  <!-- stage cards: snake flow, left-to-right then right-to-left -->
+  <rect x="40" y="135" width="440" height="500" rx="20" fill="#eaf2f8" stroke="#cad9e4" stroke-width="2"/>
+  <rect x="530" y="135" width="440" height="500" rx="20" fill="#e7f5f2" stroke="#bfdfd8" stroke-width="2"/>
+  <rect x="1020" y="135" width="440" height="555" rx="20" fill="#f3edfb" stroke="#d9c9ee" stroke-width="2"/>
+  <rect x="40" y="760" width="440" height="500" rx="20" fill="#e7f5f2" stroke="#bfdfd8" stroke-width="2"/>
+  <rect x="530" y="760" width="440" height="500" rx="20" fill="#eaf2f8" stroke="#cad9e4" stroke-width="2"/>
+  <rect x="1020" y="760" width="440" height="500" rx="20" fill="#fff4df" stroke="#eddbb2" stroke-width="2"/>
+
+  <text x="68" y="178" class="lane-title">1 · รับภาพ</text>
+  <text x="558" y="178" class="lane-title">2 · YOLO และติดตามคน</text>
+  <text x="1048" y="178" class="lane-title">3 · คิวภาพต่อ Track และ Gemini</text>
+  <text x="68" y="803" class="lane-title">6 · Dashboard</text>
+  <text x="558" y="803" class="lane-title">5 · API และ TiDB</text>
+  <text x="1048" y="803" class="lane-title">4 · คิวส่งข้อมูล</text>
+
+  <!-- input -->
+  <rect x="78" y="225" width="364" height="100" rx="14" class="box" stroke="#b9ccda"/>
+  <text x="260" y="263" text-anchor="middle" class="label">กล้อง MIPI · RDK X5</text>
+  <text x="260" y="292" text-anchor="middle" class="small">rdk_mipi_bridge.py ส่ง live stream เข้าเว็บ</text>
+  <rect x="78" y="365" width="364" height="82" rx="14" class="box" stroke="#b9ccda"/>
+  <text x="260" y="399" text-anchor="middle" class="label">หรือเลือกรูปภาพ</text>
+  <text x="260" y="426" text-anchor="middle" class="small">ใช้ pipeline ตรวจจับเดียวกัน</text>
+  <path d="M260 325V480M260 447V480" class="line"/>
+  <rect x="78" y="480" width="364" height="94" rx="14" fill="#d9e8f2" stroke="#adc5d5" stroke-width="2"/>
+  <text x="260" y="518" text-anchor="middle" class="label">เฟรมภาพในเบราว์เซอร์</text>
+  <text x="260" y="547" text-anchor="middle" class="small">วิดีโอสดหรือภาพต้นฉบับ</text>
+
+  <!-- detection -->
+  <rect x="568" y="225" width="364" height="78" rx="14" class="box" stroke="#b5d8d0"/>
+  <text x="750" y="258" text-anchor="middle" class="label">YOLO ตรวจจับวัตถุ</text>
+  <text x="750" y="283" text-anchor="middle" class="small">กรอบตำแหน่ง + confidence</text>
+  <path d="M442 525H508V264H568" class="line"/>
+  <path d="M750 303V337" class="line"/>
+  <rect x="568" y="337" width="364" height="76" rx="14" class="box" stroke="#b5d8d0"/>
+  <text x="750" y="369" text-anchor="middle" class="label">กรองเฉพาะ class คน</text>
+  <text x="750" y="394" text-anchor="middle" class="small">PERSON_CLASS_ID + confidence threshold</text>
+  <path d="M750 413V447" class="line"/>
+  <rect x="568" y="447" width="364" height="78" rx="14" class="box" stroke="#b5d8d0"/>
+  <text x="750" y="480" text-anchor="middle" class="label">IoU Tracker กำหนด Track ID</text>
+  <text x="750" y="505" text-anchor="middle" class="small">เชื่อมกรอบคนเดิมข้ามเฟรม</text>
+  <path d="M750 525V555" class="line"/>
+  <rect x="568" y="555" width="364" height="58" rx="14" fill="#d5eee8" stroke="#9ccfc3" stroke-width="2"/>
+  <text x="750" y="580" text-anchor="middle" class="label">บันทึก event เบื้องต้น</text>
+  <text x="750" y="602" text-anchor="middle" class="small">เวลา · กล้อง · Track · YOLO</text>
+
+  <!-- gemini -->
+  <rect x="1058" y="225" width="364" height="72" rx="14" class="box" stroke="#d1bfe7"/>
+  <text x="1240" y="254" text-anchor="middle" class="label">crop คนตาม Track ID เดิม</text>
+  <text x="1240" y="279" text-anchor="middle" class="small">ภาพย่อไม่เกิน 384 px · JPEG quality 0.72</text>
+  <path d="M932 486H1004V260H1058" class="teal"/>
+  <path d="M1240 297V318" class="teal"/>
+  <rect x="1058" y="318" width="364" height="88" rx="14" class="box" stroke="#d1bfe7"/>
+  <text x="1240" y="352" text-anchor="middle" class="label">คิวภาพ 2 เฟรมต่อคน</text>
+  <text x="1240" y="379" text-anchor="middle" class="small">เฟรม #1, #2 · เว้นอย่างน้อย 800 ms</text>
+  <text x="1240" y="398" text-anchor="middle" class="small">กำกับเวลาที่ผ่านไปจากเฟรมแรก</text>
+  <path d="M1240 406V427" class="teal"/>
+  <rect x="1058" y="427" width="364" height="78" rx="14" class="box" stroke="#d1bfe7"/>
+  <text x="1240" y="459" text-anchor="middle" class="label">ส่งทั้งคิวให้ Gemini</text>
+  <text x="1240" y="485" text-anchor="middle" class="small">หนึ่ง generateContent request ต่อ Track</text>
+  <path d="M1240 505V526" class="teal"/>
+  <rect x="1058" y="526" width="364" height="68" rx="14" class="box" stroke="#d1bfe7"/>
+  <text x="1240" y="555" text-anchor="middle" class="label">วิเคราะห์ภาพทั้งคิว</text>
+  <text x="1240" y="580" text-anchor="middle" class="small">ประเภทชุด · เพศ · ช่วงอายุ</text>
+  <path d="M1240 594V615" class="teal"/>
+  <rect x="1058" y="615" width="364" height="54" rx="14" fill="#e5dcf4" stroke="#c5afe0" stroke-width="2"/>
+  <text x="1240" y="638" text-anchor="middle" class="tag">ผล + crop ล่าสุด → event ID เดิม</text>
+  <text x="1240" y="658" text-anchor="middle" class="small">เก็บหนึ่ง event ต่อ Track / session</text>
+
+  <!-- transition to lower row -->
+  <path d="M1240 669V850" class="teal"/>
+  <path d="M750 613V710H1028V890H1058" class="dash"/>
+  <text x="894" y="700" text-anchor="middle" class="small">metadata event ส่งเข้าคิวก่อน Gemini เสร็จ</text>
+
+  <!-- queue at lower right -->
+  <rect x="1058" y="850" width="364" height="78" rx="14" class="box" stroke="#e4cd98"/>
+  <text x="1240" y="883" text-anchor="middle" class="label">รวม revision ของ event เดิม</text>
+  <text x="1240" y="908" text-anchor="middle" class="small">staging coalesce ไม่สร้างแถวซ้ำ</text>
+  <path d="M1240 928V961" class="line"/>
+  <rect x="1058" y="961" width="364" height="84" rx="14" class="box" stroke="#e4cd98"/>
+  <text x="1240" y="995" text-anchor="middle" class="label">IndexedDB outbox</text>
+  <text x="1240" y="1022" text-anchor="middle" class="small">พักคิวไว้ และลองส่งใหม่เมื่อออนไลน์</text>
+  <path d="M1240 1045V1080" class="line"/>
+  <rect x="1058" y="1080" width="364" height="100" rx="14" fill="#fff1cf" stroke="#e4cd98" stroke-width="2"/>
+  <text x="1240" y="1117" text-anchor="middle" class="label">POST /api/data/events</text>
+  <text x="1240" y="1145" text-anchor="middle" class="small">ทุก ~5 วินาที · ไม่เกิน 4 events / ชุด</text>
+  <text x="1240" y="1167" text-anchor="middle" class="small">ภาพแนบเมื่อวิเคราะห์สำเร็จ</text>
+
+  <!-- backend lower middle -->
+  <path d="M1058 1130H1004V895H970" class="line"/>
+  <rect x="568" y="850" width="364" height="90" rx="14" class="box" stroke="#b9ccda"/>
+  <text x="750" y="886" text-anchor="middle" class="label">Same-origin proxy → Node Data API</text>
+  <text x="750" y="914" text-anchor="middle" class="small">Vite หรือ Python bridge · ตรวจสิทธิ์/ข้อมูล</text>
+  <path d="M750 940V978" class="line"/>
+  <rect x="568" y="978" width="364" height="154" rx="14" fill="#d9e8f2" stroke="#adc5d5" stroke-width="2"/>
+  <text x="750" y="1012" text-anchor="middle" class="label">TiDB · แยก 2 ตาราง</text>
+  <rect x="590" y="1030" width="320" height="38" rx="9" fill="#fff"/>
+  <text x="750" y="1055" text-anchor="middle" class="small">ai_camera_person_events · ข้อมูลคน/ผลวิเคราะห์</text>
+  <rect x="590" y="1080" width="320" height="38" rx="9" fill="#fff"/>
+  <text x="750" y="1105" text-anchor="middle" class="small">ai_camera_person_event_images · JPEG crop</text>
+
+  <!-- dashboard lower left -->
+  <path d="M568 895H480" class="line"/>
+  <rect x="78" y="850" width="364" height="92" rx="14" class="box" stroke="#b5d8d0"/>
+  <text x="260" y="887" text-anchor="middle" class="label">Dashboard ดึงสถิติและรายการ</text>
+  <text x="260" y="915" text-anchor="middle" class="small">GET dashboard + events · แอดมินล็อกอิน</text>
+  <path d="M260 942V980" class="line"/>
+  <rect x="78" y="980" width="364" height="92" rx="14" class="box" stroke="#b5d8d0"/>
+  <text x="260" y="1017" text-anchor="middle" class="label">โหลดภาพตาม event ID</text>
+  <text x="260" y="1045" text-anchor="middle" class="small">GET /api/data/events/:id/image</text>
+  <path d="M260 1072V1110" class="teal"/>
+  <rect x="78" y="1110" width="364" height="84" rx="14" fill="#d5eee8" stroke="#9ccfc3" stroke-width="2"/>
+  <text x="260" y="1145" text-anchor="middle" class="label">แสดง thumbnail ในตาราง</text>
+  <text x="260" y="1172" text-anchor="middle" class="small">กดภาพเพื่อเปิดดูภาพใหญ่</text>
+
+  <rect x="40" y="1290" width="1420" height="54" rx="14" fill="#fff" stroke="#d5e0e7"/>
+  <text x="750" y="1324" text-anchor="middle" class="small">หมายเหตุ: Track ID เป็นรหัสติดตามใน session; ถ้าหายจากภาพนานหรือเริ่ม session ใหม่ คนเดิมอาจได้ ID ใหม่ · ภาพนิ่งยังวิเคราะห์ภาพเดียว</text>
+</svg>
