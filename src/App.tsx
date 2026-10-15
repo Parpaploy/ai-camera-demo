@@ -13,7 +13,6 @@ import {
   ATTIRE_BOX_COLORS,
   BOX_COLORS,
   CAMERA_DETECT_INTERVAL_MS,
-  CAMERA_GEMINI_INTERVAL_MS,
   CONF_THRESHOLD_RANGE,
   DEFAULT_ATTIRE_MODE,
   DEFAULT_CONF_THRESHOLD,
@@ -28,6 +27,7 @@ import {
   cleanGeminiText,
   cropDetectionToDataUrl,
   describePersonImage,
+  describePersonImages,
   drawBoxes,
   drawImageDetections,
   getAttireClass,
@@ -36,10 +36,19 @@ import {
   parseAttireType,
   parseGenderType,
 } from "./functions/demo.func";
-import type { BoxColorResolver } from "./functions/demo.func";
+import type { BoxColorResolver, PersonImageFrame } from "./functions/demo.func";
 import Dashboard from "./components/Dashboard";
 import { PersonEventRecorder } from "./utils/personEvents";
 import { getCameraId, queuePersonEvent, startDataSync } from "./utils/dataSync";
+
+interface PersonFrameQueue {
+  startedAt: number;
+  lastCapturedAt: number;
+  frames: PersonImageFrame[];
+}
+
+const PERSON_QUEUE_FRAME_COUNT = 2;
+const PERSON_QUEUE_SAMPLE_INTERVAL_MS = 800;
 import {
   clearDetectionHistory,
   createHistoryId,
@@ -218,6 +227,8 @@ export default function App() {
   const [apiKey, setApiKey] = useState(() => {
     return sessionStorage.getItem(SESSION_API_KEY) ?? envApiKey;
   });
+  const apiKeyRef = useRef(apiKey);
+  apiKeyRef.current = apiKey;
 
   const [showApiKeyInput, setShowApiKeyInput] = useState(false);
 
@@ -257,8 +268,8 @@ export default function App() {
   const cameraLoopActiveRef = useRef(false);
   const activeCameraSourceRef = useRef<CameraSource>("browser");
   const runningRef = useRef(false);
-  const geminiLastRunRef = useRef(0);
   const geminiRunningRef = useRef(false);
+  const personFrameQueuesRef = useRef(new Map<number, PersonFrameQueue>());
   const leftPanelRef = useRef<HTMLDivElement>(null);
 
   const trackerRef = useRef(new IouTracker());
@@ -349,6 +360,7 @@ export default function App() {
     setPersonDescriptions({});
     personDescriptionsRef.current = {};
     imageHistorySessionRef.current = null;
+    personFrameQueuesRef.current.clear();
     trackerRef.current.reset();
   }, [attireMode]);
 
@@ -394,6 +406,7 @@ export default function App() {
   const handleResetTracking = useCallback(() => {
     eventRecorderRef.current.resetTracks();
     analysisEpochRef.current += 1;
+    personFrameQueuesRef.current.clear();
     trackerRef.current.reset();
     cameraTrackEpochRef.current += 1;
     setPersonDescriptions({});
@@ -405,6 +418,7 @@ export default function App() {
       source: HTMLImageElement | HTMLVideoElement,
       det: TrackedDetection,
       trackId: number,
+      queuedFrames?: PersonImageFrame[],
     ) => {
       const epoch = analysisEpochRef.current;
       if (!trackerRef.current.hasTrack(trackId)) return;
@@ -423,8 +437,8 @@ export default function App() {
       let dashboardThumbnail: string;
 
       try {
-        thumbnail = cropDetectionToDataUrl(source, det);
-        dashboardThumbnail = cropDetectionToDataUrl(source, det, 320, 0.65);
+        thumbnail = queuedFrames?.[queuedFrames.length - 1]?.dataUrl ?? cropDetectionToDataUrl(source, det);
+        dashboardThumbnail = queuedFrames?.[queuedFrames.length - 1]?.dataUrl ?? cropDetectionToDataUrl(source, det, 320, 0.65);
       } catch (err) {
         if (epoch !== analysisEpochRef.current || !trackerRef.current.hasTrack(trackId)) return;
         console.error(err);
@@ -438,11 +452,9 @@ export default function App() {
       updatePersonDescription(trackId, { loading: true, thumbnail });
 
       try {
-        const text = await describePersonImage(
-          thumbnail,
-          currentApiKey,
-          attireModeRef.current,
-        );
+        const text = queuedFrames?.length
+          ? await describePersonImages(queuedFrames, currentApiKey, attireModeRef.current)
+          : await describePersonImage(thumbnail, currentApiKey, attireModeRef.current);
         if (epoch !== analysisEpochRef.current || !trackerRef.current.hasTrack(trackId)) return;
         eventRecorderRef.current.attachThumbnail(trackId, dashboardThumbnail);
         const attire = parseAttireType(text);
@@ -480,6 +492,7 @@ export default function App() {
     async (
       source: HTMLImageElement | HTMLVideoElement,
       results: TrackedDetection[],
+      useCameraQueue = false,
     ) => {
       const people = results.filter((det) => det.classId === PERSON_CLASS_ID());
       if (people.length === 0) return;
@@ -492,7 +505,11 @@ export default function App() {
       if (geminiRunningRef.current) return;
 
       const toAnalyze = people.filter(
-        (det) => !trackerRef.current.isAnalyzed(det.trackId),
+        (det) => {
+          if (trackerRef.current.isAnalyzed(det.trackId)) return false;
+          return !useCameraQueue ||
+            (personFrameQueuesRef.current.get(det.trackId)?.frames.length ?? 0) >= PERSON_QUEUE_FRAME_COUNT;
+        },
       );
 
       if (toAnalyze.length === 0) return;
@@ -503,11 +520,13 @@ export default function App() {
       try {
         for (const det of toAnalyze) {
           if (epoch !== analysisEpochRef.current) break;
-          await analyzePerson(source, det, det.trackId);
+          const queue = useCameraQueue ? personFrameQueuesRef.current.get(det.trackId) : undefined;
+          const frames = queue?.frames.slice();
+          if (useCameraQueue) personFrameQueuesRef.current.delete(det.trackId);
+          await analyzePerson(source, det, det.trackId, frames);
         }
       } finally {
         geminiRunningRef.current = false;
-        geminiLastRunRef.current = performance.now();
       }
     },
     [apiKey, analyzePerson],
@@ -531,6 +550,7 @@ export default function App() {
     setStatus("idle");
     setErrorMsg("");
     setInferenceMs(null);
+    personFrameQueuesRef.current.clear();
     trackerRef.current.reset();
   }, []);
 
@@ -547,6 +567,7 @@ export default function App() {
     personDescriptionsRef.current = {};
     setPersonDescriptions({});
     setStatus("loading-model");
+    personFrameQueuesRef.current.clear();
     trackerRef.current.reset();
 
     try {
@@ -664,6 +685,7 @@ export default function App() {
     setDetections([]);
     setPersonDescriptions({});
     personDescriptionsRef.current = {};
+    personFrameQueuesRef.current.clear();
     trackerRef.current.reset();
 
     const overlay = overlayCanvasRef.current;
@@ -733,6 +755,39 @@ export default function App() {
         tracked.filter(det => det.classId === PERSON_CLASS_ID()),
         id => trackerRef.current.hasTrack(id),
       );
+      const trackedPeople = tracked.filter(det => det.classId === PERSON_CLASS_ID());
+      const sampleNow = performance.now();
+      for (const trackId of personFrameQueuesRef.current.keys()) {
+        if (!trackerRef.current.hasTrack(trackId)) personFrameQueuesRef.current.delete(trackId);
+      }
+      if (apiKeyRef.current.trim()) {
+        for (const det of trackedPeople) {
+          if (trackerRef.current.isAnalyzed(det.trackId)) {
+            personFrameQueuesRef.current.delete(det.trackId);
+            continue;
+          }
+          let queue = personFrameQueuesRef.current.get(det.trackId);
+          if (!queue) {
+            queue = { startedAt: sampleNow, lastCapturedAt: 0, frames: [] };
+            personFrameQueuesRef.current.set(det.trackId, queue);
+          }
+          const readyToSample = queue.frames.length === 0 ||
+            sampleNow - queue.lastCapturedAt >= PERSON_QUEUE_SAMPLE_INTERVAL_MS;
+          if (queue.frames.length < PERSON_QUEUE_FRAME_COUNT && readyToSample) {
+            try {
+              queue.frames.push({
+                dataUrl: cropDetectionToDataUrl(source, det, 384, 0.72),
+                frameIndex: queue.frames.length + 1,
+                elapsedMs: sampleNow - queue.startedAt,
+              });
+              queue.lastCapturedAt = sampleNow;
+            } catch (error) {
+              console.warn(`เก็บภาพเฟรมของ Track ${det.trackId} ไม่สำเร็จ`, error);
+              personFrameQueuesRef.current.delete(det.trackId);
+            }
+          }
+        }
+      }
       for (const [key, attire] of cameraTrackSummariesRef.current) {
         const [epoch, id] = key.split(":").map(Number);
         if (epoch !== cameraTrackEpochRef.current || !trackerRef.current.hasTrack(id)) {
@@ -779,14 +834,7 @@ export default function App() {
       setStatus("done");
       setErrorMsg("");
 
-      const now = performance.now();
-
-      if (
-        now - geminiLastRunRef.current >= CAMERA_GEMINI_INTERVAL_MS &&
-        !geminiRunningRef.current
-      ) {
-        void analyzeAllPeople(source, tracked);
-      }
+      if (!geminiRunningRef.current) void analyzeAllPeople(source, tracked, true);
     } catch (err) {
       if (!isCurrent()) return;
       console.error(err);
@@ -813,6 +861,7 @@ export default function App() {
     analysisEpochRef.current += 1;
     setErrorMsg("");
     setStatus("loading-model");
+    personFrameQueuesRef.current.clear();
     trackerRef.current.reset();
 
     try {
@@ -848,7 +897,7 @@ export default function App() {
         cameraLoopActiveRef.current = true;
       }
 
-      geminiLastRunRef.current = 0;
+      personFrameQueuesRef.current.clear();
       cameraTrackSummariesRef.current.clear();
       retiredCountsRef.current = { target: 0, other: 0, uncertain: 0, unclassified: 0 };
       cameraTrackEpochRef.current = 0;
@@ -984,6 +1033,7 @@ export default function App() {
     personDescriptionsRef.current = {};
     imageHistorySessionRef.current = null;
     setInferenceMs(null);
+    personFrameQueuesRef.current.clear();
     trackerRef.current.reset();
 
     if (next === "image") stopCamera();
@@ -1336,8 +1386,8 @@ export default function App() {
                     {inferenceMs !== null && `${inferenceMs.toFixed(0)}ms · `}
                     {detections.length} objects · ติดตาม{" "}
                     {trackerRef.current.activeTrackCount} track · YOLO ทุก{" "}
-                    {CAMERA_DETECT_INTERVAL_MS}ms · Gemini ทุก{" "}
-                    {CAMERA_GEMINI_INTERVAL_MS / 1000}s
+                    {CAMERA_DETECT_INTERVAL_MS}ms · Gemini เมื่อครบ{" "}
+                    {PERSON_QUEUE_FRAME_COUNT} เฟรม/คน
                   </span>
                 )}
               </div>
