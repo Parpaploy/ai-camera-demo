@@ -85,26 +85,20 @@ TiDB เป็นบริการฐานข้อมูล ส่วน Data
    npm run data:migrate
    ```
 
-5. เปิด Data API ในเทอร์มินัลที่หนึ่ง:
+5. เปิดเว็บและ Data API พร้อมกันด้วยคำสั่งเดียว:
 
    ```bash
-   npm run data:dev
+   npm run dev -- --host 0.0.0.0
    ```
 
-6. เปิดกล้องบนบอร์ดในเทอร์มินัลที่สอง โดยใช้ค่าที่ทดสอบแล้ว:
+6. เปิดกล้องบนบอร์ดในอีกเทอร์มินัล โดยใช้ค่าที่ทดสอบแล้ว:
 
    ```bash
    python3 scripts/rdk_mipi_bridge.py \
      --width 1280 --height 720 --fps 30 --jpeg-quality 55
    ```
 
-7. สำหรับ development เปิดเทอร์มินัลที่สาม:
-
-   ```bash
-   npm run dev -- --host 0.0.0.0
-   ```
-
-   เปิด `http://<IP-บอร์ด>:5173` หรือใช้ `npm run build` แล้วเปิด
+7. เปิด `http://<IP-บอร์ด>:5173` หรือใช้ `npm run build` แล้วเปิด
    `http://<IP-บอร์ด>:8765` ผ่าน Python bridge ได้เช่นเดิม
    ทั้งสองแบบ proxy `/api/data/*` ไป Data API ที่ localhost:8787
 8. เปิด Dashboard แล้วเข้าสู่ระบบด้วยรหัส `DASHBOARD_ADMIN_PASSWORD`

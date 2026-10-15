@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node scripts/dev.mjs",
     "build": "tsc -b && vite build --outDir ./dist/public",
     "preview": "vite preview",
     "data:dev": "node --env-file=.env.server server/index.mjs",
