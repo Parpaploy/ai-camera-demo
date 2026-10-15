@@ -97,6 +97,7 @@ function buildCameraHistoryEntry(
   session: CameraHistorySession,
   completedAt: number,
   categories: (AttireType | undefined)[],
+  retired: Record<AttireType | "unclassified", number>,
 ): DetectionHistoryEntry {
   const targetCount = categories.filter((type) => type === "target").length;
   const otherCount = categories.filter((type) => type === "other").length;
@@ -108,12 +109,12 @@ function buildCameraHistoryEntry(
     ...session,
     completedAt,
     durationMs: Math.max(0, completedAt - session.startedAt),
-    peopleDetected: categories.length,
-    targetCount,
-    otherCount,
-    uncertainCount,
+    peopleDetected: categories.length + Object.values(retired).reduce((a, b) => a + b, 0),
+    targetCount: targetCount + retired.target,
+    otherCount: otherCount + retired.other,
+    uncertainCount: uncertainCount + retired.uncertain,
     unclassifiedCount:
-      categories.length - targetCount - otherCount - uncertainCount,
+      categories.length - targetCount - otherCount - uncertainCount + retired.unclassified,
     source: "camera",
   };
 }
@@ -138,11 +139,28 @@ function getDetectionBoxColor(
   }
 }
 
+let mipiCommandQueue: Promise<unknown> = Promise.resolve();
+
+function queueMipiCommand<T>(command: () => Promise<T>): Promise<T> {
+  const next = mipiCommandQueue.then(command, command);
+  mipiCommandQueue = next.catch(() => undefined);
+  return next;
+}
+
+function stopMipiBridge() {
+  return queueMipiCommand(async () => {
+    const response = await fetch("/api/mipi/stop", {
+      method: "POST", keepalive: true, signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok) throw new Error("MIPI stop failed");
+  });
+}
+
 async function waitForMipiBridge() {
   let response: Response;
 
   try {
-    response = await fetch("/api/mipi/start", { method: "POST" });
+    response = await fetch("/api/mipi/start", { method: "POST", signal: AbortSignal.timeout(25000) });
   } catch {
     throw new Error(
       "ติดต่อบริการกล้องไม่ได้ ให้รัน scripts/rdk_mipi_bridge.py บน RDK X5 ก่อน",
@@ -215,6 +233,7 @@ export default function App() {
     new Map(),
   );
   const cameraTrackEpochRef = useRef(0);
+  const retiredCountsRef = useRef({ target: 0, other: 0, uncertain: 0, unclassified: 0 });
 
   const selectedClassesRef = useRef(selectedClasses);
   const confThresholdRef = useRef(confThreshold);
@@ -230,6 +249,8 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const cameraRequestIdRef = useRef(0);
+  const analysisEpochRef = useRef(0);
+  const loopGenerationRef = useRef(0);
   const cameraLoopRef = useRef<number | null>(null);
   const cameraLoopActiveRef = useRef(false);
   const activeCameraSourceRef = useRef<CameraSource>("browser");
@@ -366,6 +387,7 @@ export default function App() {
   };
 
   const handleResetTracking = useCallback(() => {
+    analysisEpochRef.current += 1;
     trackerRef.current.reset();
     cameraTrackEpochRef.current += 1;
     setPersonDescriptions({});
@@ -378,6 +400,8 @@ export default function App() {
       det: TrackedDetection,
       trackId: number,
     ) => {
+      const epoch = analysisEpochRef.current;
+      if (!trackerRef.current.hasTrack(trackId)) return;
       const currentApiKey = apiKey.trim();
 
       if (!currentApiKey) {
@@ -394,6 +418,7 @@ export default function App() {
       try {
         thumbnail = cropDetectionToDataUrl(source, det);
       } catch (err) {
+        if (epoch !== analysisEpochRef.current || !trackerRef.current.hasTrack(trackId)) return;
         console.error(err);
         updatePersonDescription(trackId, {
           loading: false,
@@ -410,6 +435,7 @@ export default function App() {
           currentApiKey,
           attireModeRef.current,
         );
+        if (epoch !== analysisEpochRef.current || !trackerRef.current.hasTrack(trackId)) return;
         const attire = parseAttireType(text);
         const gender = parseGenderType(text);
         const ageGroup = parseAgeGroupType(text);
@@ -426,6 +452,7 @@ export default function App() {
 
         trackerRef.current.markAnalyzed(trackId);
       } catch (err) {
+        if (epoch !== analysisEpochRef.current || !trackerRef.current.hasTrack(trackId)) return;
         console.error(err);
         updatePersonDescription(trackId, {
           loading: false,
@@ -461,10 +488,12 @@ export default function App() {
 
       if (toAnalyze.length === 0) return;
 
+      const epoch = analysisEpochRef.current;
       geminiRunningRef.current = true;
 
       try {
         for (const det of toAnalyze) {
+          if (epoch !== analysisEpochRef.current) break;
           await analyzePerson(source, det, det.trackId);
         }
       } finally {
@@ -574,17 +603,17 @@ export default function App() {
 
   const stopCamera = useCallback(() => {
     cameraRequestIdRef.current += 1;
+    analysisEpochRef.current += 1;
+    loopGenerationRef.current += 1;
     const shouldStopMipi =
-      activeCameraSourceRef.current === "rdk-mipi" &&
-      cameraLoopActiveRef.current;
+      activeCameraSourceRef.current === "rdk-mipi";
     cameraLoopActiveRef.current = false;
     if (cameraLoopRef.current !== null) {
       window.clearTimeout(cameraLoopRef.current);
       cameraLoopRef.current = null;
     }
 
-    runningRef.current = false;
-
+    // An in-flight inference owns this flag until its finally block.
     const video = videoRef.current;
     if (video) {
       video.pause();
@@ -597,9 +626,7 @@ export default function App() {
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     if (shouldStopMipi) {
-      void fetch("/api/mipi/stop", { method: "POST", keepalive: true }).catch(
-        () => undefined,
-      );
+      void stopMipiBridge().catch(() => undefined);
     }
 
     const cameraSession = cameraHistorySessionRef.current;
@@ -609,6 +636,7 @@ export default function App() {
           cameraSession,
           Date.now(),
           [...cameraTrackSummariesRef.current.values()],
+          retiredCountsRef.current,
         ),
       );
       cameraHistorySessionRef.current = null;
@@ -631,14 +659,15 @@ export default function App() {
     }
   }, [saveHistoryEntry]);
 
-  const cameraLoop = useCallback(async () => {
+  const cameraLoop = useCallback(async (generation: number) => {
+    const isCurrent = () => cameraLoopActiveRef.current && generation === loopGenerationRef.current;
     const source =
       activeCameraSourceRef.current === "rdk-mipi"
         ? mipiImageRef.current
         : videoRef.current;
     const overlay = overlayCanvasRef.current;
 
-    if (!cameraLoopActiveRef.current) return;
+    if (!isCurrent()) return;
 
     const sourceReady =
       source &&
@@ -647,9 +676,9 @@ export default function App() {
         : source.naturalWidth > 0 && source.naturalHeight > 0);
 
     if (!source || !overlay || !sourceReady) {
-      if (cameraLoopActiveRef.current) {
+      if (isCurrent()) {
         cameraLoopRef.current = window.setTimeout(
-          cameraLoop,
+          () => cameraLoop(generation),
           CAMERA_DETECT_INTERVAL_MS,
         );
       }
@@ -657,9 +686,9 @@ export default function App() {
     }
 
     if (runningRef.current) {
-      if (cameraLoopActiveRef.current) {
+      if (isCurrent()) {
         cameraLoopRef.current = window.setTimeout(
-          cameraLoop,
+          () => cameraLoop(generation),
           CAMERA_DETECT_INTERVAL_MS,
         );
       }
@@ -678,11 +707,26 @@ export default function App() {
         iouThreshold: iouThresholdRef.current,
       });
 
+      if (!isCurrent()) return;
       const filtered = rawResults.filter((d) =>
         selectedClassesRef.current.has(d.classId),
       );
 
       const tracked = trackerRef.current.update(filtered);
+      for (const [key, attire] of cameraTrackSummariesRef.current) {
+        const [epoch, id] = key.split(":").map(Number);
+        if (epoch !== cameraTrackEpochRef.current || !trackerRef.current.hasTrack(id)) {
+          retiredCountsRef.current[attire ?? "unclassified"] += 1;
+          cameraTrackSummariesRef.current.delete(key);
+        }
+      }
+      const descriptions = Object.fromEntries(
+        Object.entries(personDescriptionsRef.current).filter(([id]) =>
+          trackerRef.current.hasTrack(Number(id)),
+        ),
+      );
+      personDescriptionsRef.current = descriptions;
+      setPersonDescriptions(descriptions);
 
       tracked
         .filter((det) => det.classId === PERSON_CLASS_ID())
@@ -721,9 +765,10 @@ export default function App() {
         now - geminiLastRunRef.current >= CAMERA_GEMINI_INTERVAL_MS &&
         !geminiRunningRef.current
       ) {
-        await analyzeAllPeople(source, tracked);
+        void analyzeAllPeople(source, tracked);
       }
     } catch (err) {
+      if (!isCurrent()) return;
       console.error(err);
       setErrorMsg(
         err instanceof Error
@@ -734,9 +779,9 @@ export default function App() {
     } finally {
       runningRef.current = false;
 
-      if (cameraLoopActiveRef.current) {
+      if (isCurrent()) {
         cameraLoopRef.current = window.setTimeout(
-          cameraLoop,
+          () => cameraLoop(generation),
           CAMERA_DETECT_INTERVAL_MS,
         );
       }
@@ -745,6 +790,7 @@ export default function App() {
 
   const startCamera = useCallback(async () => {
     const requestId = ++cameraRequestIdRef.current;
+    analysisEpochRef.current += 1;
     setErrorMsg("");
     setStatus("loading-model");
     trackerRef.current.reset();
@@ -753,13 +799,11 @@ export default function App() {
       activeCameraSourceRef.current = cameraSource;
 
       if (cameraSource === "rdk-mipi") {
-        await waitForMipiBridge();
+        await queueMipiCommand(async () => {
+          if (requestId === cameraRequestIdRef.current) await waitForMipiBridge();
+        });
 
         if (requestId !== cameraRequestIdRef.current) {
-          void fetch("/api/mipi/stop", {
-            method: "POST",
-            keepalive: true,
-          }).catch(() => undefined);
           return;
         }
 
@@ -786,6 +830,7 @@ export default function App() {
 
       geminiLastRunRef.current = 0;
       cameraTrackSummariesRef.current.clear();
+      retiredCountsRef.current = { target: 0, other: 0, uncertain: 0, unclassified: 0 };
       cameraTrackEpochRef.current = 0;
       cameraHistorySessionRef.current = {
         id: createHistoryId(),
@@ -815,11 +860,13 @@ export default function App() {
 
   useEffect(() => {
     if (!cameraActive) return;
+    const generation = ++loopGenerationRef.current;
 
     if (activeCameraSourceRef.current === "rdk-mipi") {
-      cameraLoopRef.current = window.setTimeout(cameraLoop, 200);
+      cameraLoopRef.current = window.setTimeout(() => cameraLoop(generation), 200);
 
       return () => {
+        loopGenerationRef.current += 1;
         if (cameraLoopRef.current !== null) {
           window.clearTimeout(cameraLoopRef.current);
           cameraLoopRef.current = null;
@@ -838,11 +885,12 @@ export default function App() {
     video
       .play()
       .then(() => {
-        if (streamRef.current) {
-          cameraLoopRef.current = window.setTimeout(cameraLoop, 200);
+        if (streamRef.current === stream && generation === loopGenerationRef.current) {
+          cameraLoopRef.current = window.setTimeout(() => cameraLoop(generation), 200);
         }
       })
       .catch((err) => {
+        if (generation !== loopGenerationRef.current) return;
         console.error("Video play failed:", err);
         setErrorMsg(
           "ไม่สามารถแสดงภาพจากกล้องได้ กรุณาตรวจสอบสิทธิ์กล้องของเบราว์เซอร์",
@@ -851,12 +899,41 @@ export default function App() {
       });
 
     return () => {
+      loopGenerationRef.current += 1;
       if (cameraLoopRef.current !== null) {
         window.clearTimeout(cameraLoopRef.current);
         cameraLoopRef.current = null;
       }
     };
   }, [cameraActive, cameraLoop]);
+
+  useEffect(() => {
+    if (!cameraActive || cameraSource !== "rdk-mipi") return;
+    let disposed = false;
+    let timer: number;
+    const checkHealth = async () => {
+      try {
+        const response = await fetch("/api/mipi/status", {
+          signal: AbortSignal.timeout(5000), cache: "no-store",
+        });
+        if (!response.ok) throw new Error("ติดต่อบริการกล้อง MIPI ไม่ได้");
+        const health = await response.json();
+        if (disposed) return;
+        if (health.state === "error" || health.state === "stopped") {
+          throw new Error(health.error || "กล้อง MIPI หยุดส่งภาพแล้ว");
+        }
+      } catch (error) {
+        if (disposed) return;
+        stopCamera();
+        setStatus("error");
+        setErrorMsg(error instanceof Error ? error.message : "การเชื่อมต่อ MIPI ขาดหาย");
+        return;
+      }
+      if (!disposed) timer = window.setTimeout(checkHealth, 2000);
+    };
+    timer = window.setTimeout(checkHealth, 2000);
+    return () => { disposed = true; window.clearTimeout(timer); };
+  }, [cameraActive, cameraSource, stopCamera]);
 
   useEffect(() => {
     if (mode === "image") stopCamera();
@@ -893,11 +970,7 @@ export default function App() {
   };
 
   const openDashboard = () => {
-    if (mode === "camera" && status === "loading-model") {
-      cameraRequestIdRef.current += 1;
-      setStatus("idle");
-    }
-    if (cameraActive) stopCamera();
+    if (cameraActive || (mode === "camera" && status === "loading-model")) stopCamera();
     setPage("dashboard");
   };
 
@@ -1432,11 +1505,7 @@ export default function App() {
                           alt="ภาพสดจากกล้อง MIPI ของ RDK X5"
                           onError={() => {
                             if (!cameraLoopActiveRef.current) return;
-                            cameraLoopActiveRef.current = false;
-                            void fetch("/api/mipi/stop", {
-                              method: "POST",
-                              keepalive: true,
-                            }).catch(() => undefined);
+                            stopCamera();
                             setStatus("error");
                             setErrorMsg(
                               "รับภาพจากกล้อง MIPI ไม่ได้ ตรวจสอบบริการบน RDK X5 แล้วลองปิดและเปิดกล้องใหม่",

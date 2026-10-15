@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing as mp
 import threading
 import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -16,166 +17,205 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_WEB_ROOT = PROJECT_ROOT / "dist" / "public"
 
 
+def capture_worker(config, stop, buffer, metadata, lock):
+    """Only this process touches the SDK; a blocked native call can be terminated."""
+    width, height, fps, quality, video_index = config
+    camera = None
+    try:
+        import cv2
+        import numpy as np
+        from hobot_vio import libsrcampy
+
+        camera = libsrcampy.Camera()
+        result = camera.open_cam(0, video_index, fps, width, height)
+        if result not in (None, 0):
+            raise RuntimeError(f"Camera.open_cam returned {result}")
+        frame_bytes = width * height * 3 // 2
+        while not stop.is_set():
+            started = time.monotonic()
+            try:
+                raw = camera.get_img(2, width, height)
+            except TypeError:
+                raw = camera.get_img(2)
+            if raw is None:
+                stop.wait(0.01)
+                continue
+            nv12 = (np.asarray(raw, dtype=np.uint8).reshape(-1)
+                    if isinstance(raw, np.ndarray) else np.frombuffer(raw, dtype=np.uint8))
+            if nv12.size < frame_bytes:
+                raise RuntimeError("MIPI frame is shorter than the configured NV12 resolution")
+            bgr = cv2.cvtColor(nv12[:frame_bytes].reshape(height * 3 // 2, width),
+                              cv2.COLOR_YUV2BGR_NV12)
+            ok, jpeg = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+            if not ok:
+                raise RuntimeError("JPEG encoding failed")
+            data = jpeg.tobytes()
+            if len(data) > len(buffer):
+                raise RuntimeError("JPEG exceeds the shared frame buffer")
+            with lock:
+                memoryview(buffer).cast("B")[:len(data)] = data
+                metadata[0] = len(data)
+                metadata[1] += 1
+            stop.wait(max(0, 1 / fps - (time.monotonic() - started)))
+    except Exception as exc:
+        data = f"{type(exc).__name__}: {exc}".encode()[:len(buffer)]
+        with lock:
+            memoryview(buffer).cast("B")[:len(data)] = data
+            metadata[0] = len(data)
+            metadata[1] = -1
+    finally:
+        if camera is not None:
+            camera.close_cam()
+
+
 class MipiCameraFeed:
-    def __init__(
-        self,
-        width: int,
-        height: int,
-        fps: int,
-        jpeg_quality: int,
-        video_index: int,
-    ) -> None:
-        self.width = width
-        self.height = height
-        self.fps = fps
-        self.jpeg_quality = jpeg_quality
-        self.video_index = video_index
+    def __init__(self, width, height, fps, jpeg_quality, video_index,
+                 frame_timeout=10.0, worker_target=capture_worker):
+        self.width, self.height, self.fps = width, height, fps
+        self.jpeg_quality, self.video_index = jpeg_quality, video_index
+        self.frame_timeout = frame_timeout
+        self.worker_target = worker_target
         self.condition = threading.Condition()
         self.lifecycle_lock = threading.Lock()
         self.stop_event = threading.Event()
-        self.latest_jpeg: bytes | None = None
+        self.latest_jpeg = None
         self.frame_id = 0
         self.state = "stopped"
         self.error = ""
-        self.camera = None
-        self.thread: threading.Thread | None = None
+        self.thread = None
+        self.last_frame_at = None
+        self.restart_count = 0
+        self.context = mp.get_context("spawn")
+        self.blocked = False
 
-    def start_capture(self) -> None:
+    def start_capture(self):
         with self.lifecycle_lock:
+            if self.blocked:
+                return
+            if self.thread is not None and self.thread.is_alive():
+                return
             with self.condition:
-                if self.state in ("starting", "ready"):
-                    return
-                previous_thread = self.thread
-
-            if previous_thread is not None and previous_thread.is_alive():
-                previous_thread.join(timeout=5)
-
-            with self.condition:
-                if self.thread is not None and self.thread.is_alive():
-                    self.state = "error"
-                    self.error = "Previous MIPI camera session did not stop"
-                    self.condition.notify_all()
-                    return
-
                 self.stop_event = threading.Event()
                 self.latest_jpeg = None
+                self.last_frame_at = None
+                self.restart_count = 0
                 self.error = ""
                 self.state = "starting"
                 self.thread = threading.Thread(target=self._capture, daemon=True)
                 self.thread.start()
 
-    def wait_until_ready(self, timeout: float = 12) -> dict[str, object]:
+    def wait_until_ready(self, timeout=12):
         with self.condition:
-            self.condition.wait_for(
-                lambda: self.state != "starting", timeout=timeout
-            )
+            self.condition.wait_for(lambda: self.state != "starting", timeout)
             return self.snapshot()
 
-    def stop_capture(self) -> None:
+    def stop_capture(self):
         with self.lifecycle_lock:
             with self.condition:
-                thread = self.thread
-                if thread is None or not thread.is_alive():
-                    if self.state != "error":
-                        self.state = "stopped"
-                        self.latest_jpeg = None
-                    return
                 self.stop_event.set()
+                self.state = "stopping"
+                self.latest_jpeg = None
+                self.condition.notify_all()
+            if self.thread is not None:
+                self.thread.join(timeout=6)
+            with self.condition:
+                if self.blocked or (self.thread is not None and self.thread.is_alive()):
+                    self.state = "error"
+                    self.error = "Camera worker did not exit; restart the bridge/board"
+                else:
+                    self.state = "stopped"
+                    self.error = ""
                 self.condition.notify_all()
 
-            thread.join(timeout=5)
-
-    def snapshot(self) -> dict[str, object]:
+    def snapshot(self):
         with self.condition:
-            return {
-                "state": self.state,
-                "error": self.error,
-                "width": self.width,
-                "height": self.height,
-                "fps": self.fps,
-                "frameId": self.frame_id,
-            }
+            return dict(state=self.state, error=self.error, width=self.width,
+                        height=self.height, fps=self.fps, frameId=self.frame_id,
+                        restartCount=self.restart_count,
+                        frameAgeSeconds=(None if self.last_frame_at is None else
+                                         round(time.monotonic() - self.last_frame_at, 2)))
 
-    def _set_error(self, message: str) -> None:
-        with self.condition:
-            self.state = "error"
-            self.error = message
-            self.condition.notify_all()
-
-    def _capture(self) -> None:
-        try:
-            import cv2
-            import numpy as np
-            from hobot_vio import libsrcampy
-
-            self.camera = libsrcampy.Camera()
-            result = self.camera.open_cam(
-                0, self.video_index, self.fps, self.width, self.height
-            )
-            if result not in (None, 0):
-                raise RuntimeError(
-                    f"Camera.open_cam returned {result}; check the MIPI sensor and cable"
-                )
-
-            frame_bytes = self.width * self.height * 3 // 2
-            encode_options = [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality]
-
-            while not self.stop_event.is_set():
-                frame_started = time.monotonic()
-                try:
-                    raw = self.camera.get_img(2, self.width, self.height)
-                except TypeError:
-                    raw = self.camera.get_img(2)
-
-                if raw is None:
-                    time.sleep(0.01)
-                    continue
-
-                if isinstance(raw, np.ndarray):
-                    nv12 = np.asarray(raw, dtype=np.uint8).reshape(-1)
-                else:
-                    nv12 = np.frombuffer(raw, dtype=np.uint8)
-
-                if nv12.size < frame_bytes:
-                    raise RuntimeError(
-                        "MIPI frame is shorter than expected for "
-                        f"{self.width}x{self.height} NV12 ({nv12.size} bytes)"
-                    )
-
-                nv12_image = nv12[:frame_bytes].reshape(
-                    (self.height * 3 // 2, self.width)
-                )
-                bgr_image = cv2.cvtColor(nv12_image, cv2.COLOR_YUV2BGR_NV12)
-                encoded, jpeg = cv2.imencode(".jpg", bgr_image, encode_options)
-                if not encoded:
-                    raise RuntimeError("OpenCV could not encode the MIPI frame")
-
-                with self.condition:
-                    self.latest_jpeg = jpeg.tobytes()
-                    self.frame_id += 1
-                    self.state = "ready"
-                    self.error = ""
-                    self.condition.notify_all()
-
-                remaining = 1 / self.fps - (time.monotonic() - frame_started)
-                if remaining > 0:
-                    self.stop_event.wait(remaining)
-        except Exception as exc:  # The board SDK is available only on RDK X5.
-            self._set_error(
-                f"{type(exc).__name__}: {exc}. Run this service on RDK X5 with "
-                "an RDK-supported MIPI camera connected."
-            )
-        finally:
-            if self.camera is not None:
-                try:
-                    self.camera.close_cam()
-                except Exception:
-                    pass
+    def _capture(self):
+        # Bounded shared latest-frame buffer: no backlog and no pipe read that can
+        # hang if a native worker dies halfway through sending a JPEG.
+        for attempt in range(4):
             if self.stop_event.is_set():
-                with self.condition:
-                    self.state = "stopped"
-                    self.latest_jpeg = None
-                    self.condition.notify_all()
+                return
+            buffer = self.context.RawArray("B", self.width * self.height * 3 + 65536)
+            metadata = self.context.RawArray("q", 2)
+            lock = self.context.Lock()
+            worker_stop = self.context.Event()
+            process = self.context.Process(target=self.worker_target, args=(
+                (self.width, self.height, self.fps, self.jpeg_quality, self.video_index),
+                worker_stop, buffer, metadata, lock), daemon=True)
+            reason = "Camera stopped producing frames"
+            started = False
+            try:
+                process.start()
+                started = True
+                last_received = time.monotonic()
+                sequence = 0
+                while not self.stop_event.wait(0.02):
+                    data = None
+                    worker_error = False
+                    if lock.acquire(timeout=0.1):
+                        try:
+                            size, current = metadata[:]
+                            if current == -1 or current != sequence:
+                                data = bytes(memoryview(buffer).cast("B")[:size])
+                                sequence = current
+                                worker_error = current == -1
+                        finally:
+                            lock.release()
+                    if worker_error:
+                        reason = data.decode(errors="replace")
+                        break
+                    if data:
+                        last_received = time.monotonic()
+                        with self.condition:
+                            if self.stop_event.is_set():
+                                break
+                            self.latest_jpeg = data
+                            self.last_frame_at = last_received
+                            self.frame_id += 1
+                            self.state, self.error = "ready", ""
+                            self.condition.notify_all()
+                    if not process.is_alive():
+                        reason = f"Camera worker exited ({process.exitcode})"
+                        break
+                    if time.monotonic() - last_received > self.frame_timeout:
+                        reason = "Timed out waiting for a fresh MIPI frame"
+                        break
+            except Exception as exc:
+                reason = str(exc)
+            finally:
+                if started:
+                    worker_stop.set()
+                    process.join(timeout=1)
+                    if process.is_alive():
+                        process.terminate()
+                        process.join(timeout=1)
+                    if process.is_alive():
+                        process.kill()
+                        process.join(timeout=1)
+                    if process.is_alive():
+                        # Never open another owner while the previous one lives.
+                        with self.condition:
+                            self.blocked = True
+                            self.state, self.error = "error", "Camera process cannot be killed; restart board"
+                            self.condition.notify_all()
+                        return
+                    process.close()
+            with self.condition:
+                self.latest_jpeg = None
+                if self.stop_event.is_set():
+                    return
+                self.restart_count = attempt + 1 if attempt < 3 else 3
+                self.state = "starting" if attempt < 3 else "error"
+                self.error = reason
+                self.condition.notify_all()
+            if attempt < 3:
+                self.stop_event.wait(0.5)
 
 
 def create_handler(feed: MipiCameraFeed, web_root: Path):
@@ -254,17 +294,19 @@ def create_handler(feed: MipiCameraFeed, web_root: Path):
             self.send_header("Connection", "close")
             self.end_headers()
 
+            self.connection.settimeout(5)
+            session_stop = feed.stop_event
             last_frame_id = -1
             try:
-                while not feed.stop_event.is_set():
+                while not session_stop.is_set():
                     with feed.condition:
                         feed.condition.wait_for(
                             lambda: feed.frame_id != last_frame_id
                             or feed.state == "error"
-                            or feed.stop_event.is_set(),
+                            or session_stop.is_set(),
                             timeout=2,
                         )
-                        if feed.state == "error" or feed.stop_event.is_set():
+                        if feed.state == "error" or session_stop.is_set():
                             break
                         jpeg = feed.latest_jpeg
                         current_frame_id = feed.frame_id
@@ -299,6 +341,7 @@ def main() -> None:
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=720)
     parser.add_argument("--fps", type=int, default=20)
+    parser.add_argument("--frame-timeout", type=float, default=10)
     parser.add_argument("--jpeg-quality", type=int, default=80)
     parser.add_argument(
         "--video-index",
@@ -312,6 +355,8 @@ def main() -> None:
 
     if args.width <= 0 or args.width % 2 or args.height <= 0 or args.height % 2:
         parser.error("--width and --height must be positive even numbers")
+    if args.frame_timeout <= 0:
+        parser.error("--frame-timeout must be greater than zero")
     if args.fps <= 0:
         parser.error("--fps must be greater than zero")
     if not 1 <= args.jpeg_quality <= 100:
@@ -323,6 +368,7 @@ def main() -> None:
         args.fps,
         args.jpeg_quality,
         args.video_index,
+        frame_timeout=args.frame_timeout,
     )
 
     server = ThreadingHTTPServer(

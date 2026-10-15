@@ -161,6 +161,7 @@ export async function describePersonImage(
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
   const response = await fetch(url, {
+    signal: AbortSignal.timeout(30000),
     method: "POST",
     headers: {
       "Content-Type": "application/json",
