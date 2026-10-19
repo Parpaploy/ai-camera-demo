@@ -55,6 +55,11 @@ export function loadDetectionHistory(): DetectionHistoryEntry[] {
 
     return parsed
       .filter(isHistoryEntry)
+      .map(entry => ({ ...entry,
+        peopleDetected: entry.targetCount + entry.otherCount + entry.uncertainCount,
+        unclassifiedCount: 0,
+      }))
+      .filter(entry => entry.peopleDetected > 0)
       .sort((a, b) => b.startedAt - a.startedAt)
       .slice(0, HISTORY_LIMIT);
   } catch {

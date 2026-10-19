@@ -56,6 +56,7 @@ export async function disconnectData() {
 const staged = new Map<string, PersonEvent>();
 let draining = false;
 export function queuePersonEvent(event: PersonEvent) {
+  if (event.attire === 'unclassified') return;
   if (staged.size >= 1000 && !staged.has(event.eventId)) {
     publish({ dropped: state.dropped + 1, storageError: 'คิวในหน่วยความจำเต็ม บางเหตุการณ์ยังบันทึกไม่ได้ กรุณาตรวจพื้นที่จัดเก็บ' }); return;
   }

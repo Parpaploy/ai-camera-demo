@@ -10,7 +10,7 @@ interface Props {
   onClearHistory: () => void;
 }
 type View = 'today' | 'stats' | 'events' | 'local';
-const classes = ['target', 'other', 'uncertain', 'unclassified'] as const;
+const classes = ['target', 'other', 'uncertain'] as const;
 const labels: Record<string, string> = { target: 'กลุ่มเป้าหมาย', other: 'กลุ่มอื่น', uncertain: 'ไม่แน่ใจ', unclassified: 'รอจำแนก', male: 'ชาย', female: 'หญิง', unisex: 'ไม่ระบุเพศ', teen: 'วัยรุ่น', adult: 'ผู้ใหญ่', elderly: 'ผู้สูงอายุ' };
 const colors = { target: '#5eead4', other: '#fb923c', uncertain: '#fcd34d', unclassified: '#94a3b8' };
 const control = 'rounded-md border border-line bg-ink px-3 py-2 text-sm text-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent';
@@ -18,7 +18,7 @@ const action = 'rounded-md border border-line px-3 py-2 text-sm text-slate-200 h
 function today() { return new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10); }
 function shiftDay(day: string, amount: number) { return new Date(Date.parse(`${day}T00:00:00Z`) + amount * 86400000).toISOString().slice(0, 10); }
 function format(ms: number, timeOnly = false) { return new Intl.DateTimeFormat('th-TH', { timeZone: 'Asia/Bangkok', ...(timeOnly ? {} : { day: 'numeric', month: 'short', year: 'numeric' }), hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(ms); }
-function total(counts: EventCounts) { return Object.values(counts).reduce((a, b) => a + Number(b), 0); }
+function total(counts: EventCounts) { return classes.reduce((sum, name) => sum + Number(counts[name]), 0); }
 function className(key: string, mode: string) {
   if (key === 'target' && mode === 'camera-count') return 'เหตุการณ์บุคคล';
   if (key === 'target') return mode === 'student' ? 'นักศึกษา/บุคลากร' : mode === 'medical' ? 'บุคลากรทางการแพทย์' : 'กลุ่มเป้าหมาย';

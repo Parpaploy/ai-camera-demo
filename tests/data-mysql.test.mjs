@@ -20,7 +20,7 @@ test('MySQL: upsert is idempotent, rejects stale revisions, aggregates and pagin
     const summary = await store.dashboard(sp);
     assert.equal(summary.totals.target, 1); assert.equal(summary.totals.other, 0); assert.equal(summary.buckets.length, new Date(now + 7 * 3600000).getUTCHours() + 1);
     assert.equal(summary.cameras[0].cameraId, session);
-    await store.write(Array.from({ length: 30 }, (_, i) => ({ ...e, eventId: `${session}:0:${i + 2}`, trackId: i + 2 })));
+    await store.write(Array.from({ length: 30 }, (_, i) => ({ ...e, attire: 'other', eventId: `${session}:0:${i + 2}`, trackId: i + 2 })));
     const first = await store.events(sp); sp.set('page', '1');
     const second = await store.events(sp);
     assert.equal(first.total, 31); assert.equal(first.rows.length, 25); assert.equal(second.rows.length, 6);

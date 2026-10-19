@@ -39,11 +39,32 @@ test('API requires key, validates batch, and acknowledges only after write', asy
   assert.equal(result.status, 200);
   assert.deepEqual((await result.json()).data.accepted, [{ eventId: event.eventId, revision: 1 }]);
   assert.equal(writes, 1);
+  const pending = await fetch(url + '/events', { method: 'POST', headers,
+    body: JSON.stringify({ events: [{ ...event, attire: 'unclassified' }] }) });
+  assert.equal(pending.status, 200);
+  assert.equal((await pending.json()).data.accepted.length, 1, 'discarded legacy queue records must be acknowledged');
+  assert.equal(writes, 1, 'pending records must not reach storage');
   assert.equal((await fetch(url + '/events', { method: 'POST', headers, body: '{}' })).status, 400);
   store.write = async () => { throw Object.assign(new Error('private SQL detail'), { code: 'TEST_OFFLINE' }); };
   const failed = await fetch(url + '/events', { method: 'POST', headers, body: JSON.stringify({ events: [event] }) });
   assert.equal(failed.status, 503);
   assert.ok(!(await failed.text()).includes('private SQL detail'));
+});
+test('store excludes pending writes and hides legacy pending data in all dashboard queries', async () => {
+  const calls = [];
+  const store = createStore({ async query({ sql }, params) {
+    calls.push({ sql, params });
+    return [sql.includes('SELECT COUNT(*) AS total') ? [{ total: 0 }] : []];
+  } });
+  await store.write([{ ...event, attire: 'unclassified', thumbnail: Buffer.from('pending') }]);
+  assert.equal(calls.length, 0);
+  await store.write([event, { ...event, attire: 'unclassified' }]);
+  assert.equal(calls[0].params[0].length, 1);
+  calls.length = 0;
+  await store.events(new URLSearchParams());
+  await store.dashboard(new URLSearchParams());
+  assert.equal(calls.length, 7);
+  assert.ok(calls.every(({ sql }) => sql.includes("attire <> 'unclassified'")));
 });
 test('sort identifiers are allowlisted before SQL execution', async () => {
   const store = createStore({ query() { throw new Error('query must not run'); } });

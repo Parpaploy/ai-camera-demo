@@ -259,8 +259,8 @@ export default function Dashboard({
               tone="other"
             />
             <MetricCard
-              label="ไม่แน่ใจ / รอวิเคราะห์"
-              value={totals.uncertain + totals.unclassified}
+              label="วิเคราะห์แล้วแต่ไม่แน่ใจ"
+              value={totals.uncertain}
               tone="uncertain"
             />
           </section>
@@ -364,7 +364,7 @@ export default function Dashboard({
                         {entry.otherCount}
                       </td>
                       <td className="px-5 py-3 text-right font-mono text-amber-300">
-                        {entry.uncertainCount + entry.unclassifiedCount}
+                        {entry.uncertainCount}
                       </td>
                     </tr>
                   ))}

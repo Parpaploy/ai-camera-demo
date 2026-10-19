@@ -57,7 +57,8 @@ export function parseFilters(sp) {
   const to = sp.get('to') ?? from;
   const start = dayStart(from), end = dayStart(to) + 86400000;
   if (end <= start || end - start > 366 * 86400000) bad('เลือกช่วงวันที่ 1–366 วัน');
-  const where = ['first_seen_ms >= ?', 'first_seen_ms < ?'], params = [start, end];
+  // Keep legacy pending rows out of every dashboard aggregate and page.
+  const where = ["attire <> 'unclassified'", 'first_seen_ms >= ?', 'first_seen_ms < ?'], params = [start, end];
   const camera = sp.get('camera');
   if (camera) {
     if (!idPattern.test(camera)) bad('รหัสกล้องไม่ถูกต้อง');
@@ -94,6 +95,8 @@ export function createStore(pool) {
   return {
     async health() { await query('SELECT 1'); },
     async write(events) {
+      events = events.filter(e => e.attire !== 'unclassified');
+      if (!events.length) return;
       const rows = events.map(e => [e.eventId, e.sessionId, e.cameraId, e.trackId, e.trackEpoch, e.source, e.attireMode, e.firstSeen, e.lastSeen, e.confidence, e.attire, e.gender, e.ageGroup, e.revision, Date.now()]);
       // Immutable identity and first-seen time. Revision prevents delayed retries
       // overwriting newer classification; one batch is a single atomic statement.

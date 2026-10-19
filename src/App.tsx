@@ -47,10 +47,13 @@ interface PersonFrameQueue {
   startedAt: number;
   lastCapturedAt: number;
   frames: PersonImageFrame[];
+  attempts: number;
+  retryAfter: number;
 }
 
-const PERSON_QUEUE_FRAME_COUNT = 2;
-const PERSON_QUEUE_SAMPLE_INTERVAL_MS = 800;
+const PERSON_QUEUE_FRAME_COUNT = 3;
+const PERSON_QUEUE_SAMPLE_INTERVAL_MS = 1200;
+const PERSON_QUEUE_MAX_ATTEMPTS = 3;
 import {
   clearDetectionHistory,
   createHistoryId,
@@ -97,12 +100,11 @@ function buildHistoryEntry(
     ...base,
     completedAt,
     durationMs: Math.max(0, completedAt - base.startedAt),
-    peopleDetected: people.length,
+    peopleDetected: targetCount + otherCount + uncertainCount,
     targetCount,
     otherCount,
     uncertainCount,
-    unclassifiedCount:
-      people.length - targetCount - otherCount - uncertainCount,
+    unclassifiedCount: 0,
   };
 }
 
@@ -122,12 +124,11 @@ function buildCameraHistoryEntry(
     ...session,
     completedAt,
     durationMs: Math.max(0, completedAt - session.startedAt),
-    peopleDetected: categories.length + Object.values(retired).reduce((a, b) => a + b, 0),
+    peopleDetected: targetCount + otherCount + uncertainCount + retired.target + retired.other + retired.uncertain,
     targetCount: targetCount + retired.target,
     otherCount: otherCount + retired.other,
     uncertainCount: uncertainCount + retired.uncertain,
-    unclassifiedCount:
-      categories.length - targetCount - otherCount - uncertainCount + retired.unclassified,
+    unclassifiedCount: 0,
     source: "camera",
   };
 }
@@ -201,7 +202,9 @@ async function waitForMipiBridge() {
 export default function App() {
   const envApiKey = import.meta.env.VITE_GEMINI_API_KEY ?? "";
 
-  const [page, setPage] = useState<"dashboard" | "detector">("dashboard");
+  const [page, setPage] = useState<"dashboard" | "detector">(() =>
+    window.history.state?.aiCameraPage === "detector" ? "detector" : "dashboard",
+  );
   const [mode, setMode] = useState<Mode>("image");
   const [status, setStatus] = useState<Status>("idle");
   const [detections, setDetections] = useState<TrackedDetection[]>([]);
@@ -286,6 +289,7 @@ export default function App() {
   useEffect(() => startDataSync(), []);
 
   const saveHistoryEntry = useCallback((entry: DetectionHistoryEntry) => {
+    if (entry.peopleDetected === 0) return;
     const next = upsertDetectionHistory(historyRef.current, entry);
     historyRef.current = next;
     persistDetectionHistory(next);
@@ -301,18 +305,25 @@ export default function App() {
 
   const updatePersonDescription = useCallback(
     (trackId: number, description: PersonDescriptionState) => {
+      eventRecorderRef.current.classify(trackId, description);
+      if (!trackerRef.current.hasTrack(trackId)) {
+        // A person can leave while AI is analyzing the cached crops.
+        if (cameraHistorySessionRef.current && description.attire && !description.loading && !description.error) {
+          retiredCountsRef.current[description.attire] += 1;
+        }
+        return;
+      }
       const next = {
         ...personDescriptionsRef.current,
         [trackId]: description,
       };
       personDescriptionsRef.current = next;
       setPersonDescriptions(next);
-      eventRecorderRef.current.classify(trackId, description);
 
       const key = `${cameraTrackEpochRef.current}:${trackId}`;
       if (
         cameraHistorySessionRef.current &&
-        cameraTrackSummariesRef.current.has(key)
+        cameraTrackSummariesRef.current.has(key) && description.attire && !description.loading && !description.error
       ) {
         cameraTrackSummariesRef.current.set(key, description.attire);
       }
@@ -455,7 +466,7 @@ export default function App() {
       queuedFrames?: PersonImageFrame[],
     ) => {
       const epoch = analysisEpochRef.current;
-      if (!trackerRef.current.hasTrack(trackId)) return;
+      if (!trackerRef.current.hasTrack(trackId) || trackerRef.current.isAnalyzed(trackId) || personDescriptionsRef.current[trackId]?.loading) return;
       const currentApiKey = apiKey.trim();
 
       if (aiProvider === "gemini" && !currentApiKey) {
@@ -484,6 +495,7 @@ export default function App() {
       }
 
       updatePersonDescription(trackId, { loading: true, thumbnail });
+      eventRecorderRef.current.beginAnalysis(trackId);
 
       try {
         const frames = queuedFrames?.length
@@ -494,7 +506,10 @@ export default function App() {
           : frames.length > 1
             ? await describePersonImages(frames, currentApiKey, attireModeRef.current)
             : await describePersonImage(thumbnail, currentApiKey, attireModeRef.current);
-        if (epoch !== analysisEpochRef.current || !trackerRef.current.hasTrack(trackId)) return;
+        if (epoch !== analysisEpochRef.current) return;
+        if (!/\[(TARGET|OTHER|UNCERTAIN_ATTIRE)\]/i.test(text)) {
+          throw new Error("AI ยังไม่ส่งผลจำแนกที่สมบูรณ์ จะลองใหม่ด้วยภาพชุดเดิม");
+        }
         eventRecorderRef.current.attachThumbnail(trackId, dashboardThumbnail);
         const attire = parseAttireType(text);
         const gender = parseGenderType(text);
@@ -511,6 +526,7 @@ export default function App() {
         });
 
         trackerRef.current.markAnalyzed(trackId);
+        personFrameQueuesRef.current.delete(trackId);
       } catch (err) {
         if (epoch !== analysisEpochRef.current || !trackerRef.current.hasTrack(trackId)) return;
         console.error(err);
@@ -522,6 +538,8 @@ export default function App() {
               ? err.message
               : `เกิดข้อผิดพลาดจาก ${aiProvider === "ollama" ? "Ollama" : "Gemini API"}`,
         });
+      } finally {
+        if (epoch === analysisEpochRef.current) eventRecorderRef.current.endAnalysis(trackId);
       }
     },
     [aiProvider, apiKey, ollamaModel, updatePersonDescription],
@@ -554,8 +572,9 @@ export default function App() {
       const toAnalyze = people.filter(
         (det) => {
           if (trackerRef.current.isAnalyzed(det.trackId)) return false;
-          return !useCameraQueue ||
-            (personFrameQueuesRef.current.get(det.trackId)?.frames.length ?? 0) >= PERSON_QUEUE_FRAME_COUNT;
+          const queue = personFrameQueuesRef.current.get(det.trackId);
+          return !useCameraQueue || (!!queue && queue.frames.length >= PERSON_QUEUE_FRAME_COUNT &&
+            queue.attempts < PERSON_QUEUE_MAX_ATTEMPTS && performance.now() >= queue.retryAfter);
         },
       );
 
@@ -568,9 +587,12 @@ export default function App() {
         for (const det of toAnalyze) {
           if (epoch !== analysisEpochRef.current) break;
           const queue = useCameraQueue ? personFrameQueuesRef.current.get(det.trackId) : undefined;
+          if (useCameraQueue && (!queue || !trackerRef.current.hasTrack(det.trackId))) continue;
           const frames = queue?.frames.slice();
-          if (useCameraQueue) personFrameQueuesRef.current.delete(det.trackId);
+          if (queue) queue.attempts++;
+          // Retain a full queue while the request runs: no recropping or image backlog.
           await analyzePerson(source, det, det.trackId, frames);
+          if (queue) queue.retryAfter = performance.now() + 10_000 * 2 ** (queue.attempts - 1);
         }
       } finally {
         aiAnalysisRunningRef.current = false;
@@ -815,7 +837,7 @@ export default function App() {
           }
           let queue = personFrameQueuesRef.current.get(det.trackId);
           if (!queue) {
-            queue = { startedAt: sampleNow, lastCapturedAt: 0, frames: [] };
+            queue = { startedAt: sampleNow, lastCapturedAt: 0, frames: [], attempts: 0, retryAfter: 0 };
             personFrameQueuesRef.current.set(det.trackId, queue);
           }
           const readyToSample = queue.frames.length === 0 ||
@@ -838,7 +860,7 @@ export default function App() {
       for (const [key, attire] of cameraTrackSummariesRef.current) {
         const [epoch, id] = key.split(":").map(Number);
         if (epoch !== cameraTrackEpochRef.current || !trackerRef.current.hasTrack(id)) {
-          retiredCountsRef.current[attire ?? "unclassified"] += 1;
+          if (attire) retiredCountsRef.current[attire] += 1;
           cameraTrackSummariesRef.current.delete(key);
         }
       }
@@ -1089,13 +1111,41 @@ export default function App() {
 
   const openDashboard = () => {
     if (cameraActive || (mode === "camera" && status === "loading-model")) stopCamera();
-    setPage("dashboard");
+    navigatePage("dashboard");
+  };
+
+  const navigatePage = (nextPage: "dashboard" | "detector") => {
+    if (nextPage === page) return;
+    window.history.pushState(
+      { ...(window.history.state ?? {}), aiCameraPage: nextPage },
+      "",
+      window.location.href,
+    );
+    setPage(nextPage);
   };
 
   const startDetectionFromDashboard = (nextMode: Mode) => {
     if (nextMode !== mode) switchMode(nextMode);
-    setPage("detector");
+    navigatePage("detector");
   };
+
+  useEffect(() => {
+    const currentState = window.history.state;
+    if (currentState?.aiCameraPage !== "dashboard" && currentState?.aiCameraPage !== "detector") {
+      window.history.replaceState(
+        { ...(currentState ?? {}), aiCameraPage: page },
+        "",
+        window.location.href,
+      );
+    }
+    const handlePopState = (event: PopStateEvent) => {
+      const nextPage = event.state?.aiCameraPage === "detector" ? "detector" : "dashboard";
+      if (nextPage === "dashboard") stopCamera();
+      setPage(nextPage);
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [page, stopCamera]);
 
   const handleAttireModeChange = (nextMode: AttireDetectionMode) => {
     if (cameraActive) stopCamera();
@@ -1111,7 +1161,16 @@ export default function App() {
             ? mipiImageRef.current
             : videoRef.current;
       if (!source) return;
-      await analyzePerson(source, det, det.trackId);
+      if (aiAnalysisRunningRef.current) return;
+      const queue = personFrameQueuesRef.current.get(det.trackId);
+      if (mode === "camera" && (!queue || queue.frames.length < PERSON_QUEUE_FRAME_COUNT)) return;
+      aiAnalysisRunningRef.current = true;
+      try {
+        await analyzePerson(source, det, det.trackId, mode === "camera" ? queue?.frames.slice() : undefined);
+      } finally {
+        if (queue) queue.retryAfter = performance.now() + 10_000;
+        aiAnalysisRunningRef.current = false;
+      }
     },
     [mode, cameraSource, analyzePerson],
   );
@@ -1204,7 +1263,7 @@ export default function App() {
                 Dashboard
               </button>
               <button
-                onClick={() => setPage("detector")}
+                onClick={() => navigatePage("detector")}
                 aria-current={page === "detector" ? "page" : undefined}
                 className={`rounded px-3 py-1.5 text-sm transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${
                   page === "detector"
@@ -1482,7 +1541,7 @@ export default function App() {
                     {detections.length} objects · ติดตาม{" "}
                     {trackerRef.current.activeTrackCount} track · YOLO ทุก{" "}
                     {CAMERA_DETECT_INTERVAL_MS}ms · {aiProvider === "ollama" ? "Ollama" : "Gemini"} เมื่อครบ{" "}
-                    {PERSON_QUEUE_FRAME_COUNT} เฟรม/คน
+                    {PERSON_QUEUE_FRAME_COUNT} ภาพ/คน ห่างกัน {PERSON_QUEUE_SAMPLE_INTERVAL_MS / 1000} วินาที · วิเคราะห์ครั้งเดียวต่อ ID
                   </span>
                 )}
               </div>
@@ -1856,14 +1915,16 @@ export default function App() {
                             {isPerson && (
                               <button
                                 onClick={() => handleDescribePerson(det)}
-                                disabled={desc?.loading}
+                                disabled={desc?.loading || !!desc?.attire || (mode === "camera" && (personFrameQueuesRef.current.get(det.trackId)?.frames.length ?? 0) < PERSON_QUEUE_FRAME_COUNT)}
                                 className="shrink-0 rounded border border-line px-2 py-0.5 text-xs text-slate-300 transition hover:border-accent hover:text-accent disabled:cursor-wait disabled:opacity-50"
                               >
                                 {desc?.loading
                                   ? "กำลังวิเคราะห์..."
-                                  : desc
-                                    ? "วิเคราะห์อีกครั้ง"
-                                    : "วิเคราะห์"}
+                                  : desc?.attire
+                                    ? "วิเคราะห์แล้ว"
+                                    : mode === "camera" && (personFrameQueuesRef.current.get(det.trackId)?.frames.length ?? 0) < PERSON_QUEUE_FRAME_COUNT
+                                      ? "กำลังเก็บภาพ"
+                                      : desc?.error ? "ลองอีกครั้ง" : "วิเคราะห์"}
                               </button>
                             )}
                           </div>

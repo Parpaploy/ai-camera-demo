@@ -151,7 +151,9 @@ export function createApiServer({ store, accessKey, adminPassword = process.env.
         try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
         catch { throw new ApiError(400, 'JSON ไม่ถูกต้อง'); }
         const events = validateBatch(body);
-        await store.write(events);
+        const completed = events.filter(event => event.attire !== 'unclassified');
+        if (completed.length) await store.write(completed);
+        // Acknowledge ignored legacy pending records so old offline queues drain.
         send(200, { data: { accepted: events.map(e => ({ eventId: e.eventId, revision: e.revision })) } }); return;
       }
       if (req.method === 'GET' && url.pathname === '/api/data/dashboard') {

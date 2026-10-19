@@ -10,6 +10,8 @@ interface Track {
   classId: number;
   missedFrames: number;
   analyzed: boolean;
+  velocity: [number, number];
+  hits: number;
 }
 
 function iou(
@@ -48,34 +50,47 @@ export class IouTracker {
 
   update(detections: Detection[]): TrackedDetection[] {
     const unmatched = new Set(this.tracks.keys());
-    const results: TrackedDetection[] = [];
-
-    for (const det of detections) {
-      let bestId: number | null = null;
-      let bestIou = 0;
-
-      for (const id of unmatched) {
-        const track = this.tracks.get(id)!;
-
+    const matches = new Map<number, number>();
+    const candidates: { index: number; id: number; score: number }[] = [];
+    detections.forEach((det, index) => {
+      for (const track of this.tracks.values()) {
         if (track.classId !== det.classId) continue;
-
-        const val = iou(track.box, det.box);
-
-        if (val > bestIou && val >= this.matchIouThreshold) {
-          bestIou = val;
-          bestId = id;
-        }
+        const [x, y, w, h] = track.box;
+        const steps = Math.min(track.missedFrames + 1, 3);
+        const predicted: Track['box'] = [x + track.velocity[0] * steps, y + track.velocity[1] * steps, w, h];
+        const overlap = iou(track.box, det.box);
+        const predictedOverlap = iou(predicted, det.box);
+        const [dx, dy, dw, dh] = det.box;
+        const areaRatio = dw * dh / Math.max(1, w * h);
+        const distance = Math.hypot(dx + dw / 2 - predicted[0] - w / 2, dy + dh / 2 - predicted[1] - h / 2);
+        const near = distance / Math.max(1, Math.hypot(w, h));
+        // Small detector jumps or a brief occlusion should not allocate a new ID.
+        // Size/distance gates avoid reusing an ID for an unrelated distant person.
+        if (Math.max(overlap, predictedOverlap) < this.matchIouThreshold &&
+            !(near < 0.6 && areaRatio >= 0.5 && areaRatio <= 2)) continue;
+        candidates.push({ index, id: track.id,
+          score: Math.max(predictedOverlap * 0.8 + overlap * 0.2, 0.15 * (1 - near / 0.6)) });
       }
-
-      if (bestId !== null) {
-        const track = this.tracks.get(bestId)!;
-
+    });
+    // Match strongest pairs first, independently of detector output ordering.
+    candidates.sort((a, b) => b.score - a.score || a.id - b.id || a.index - b.index);
+    for (const { index, id } of candidates) {
+      if (matches.has(index) || !unmatched.has(id)) continue;
+      matches.set(index, id);
+      unmatched.delete(id);
+    }
+    const results = detections.map((det, index) => {
+      const matchedId = matches.get(index);
+      if (matchedId !== undefined) {
+        const track = this.tracks.get(matchedId)!;
+        const elapsed = track.missedFrames + 1;
+        const vx = (det.box[0] + det.box[2] / 2 - track.box[0] - track.box[2] / 2) / elapsed;
+        const vy = (det.box[1] + det.box[3] / 2 - track.box[1] - track.box[3] / 2) / elapsed;
+        track.velocity = track.hits === 1 ? [vx, vy] : [(track.velocity[0] + vx) / 2, (track.velocity[1] + vy) / 2];
+        track.hits++;
         track.box = det.box;
         track.missedFrames = 0;
-
-        unmatched.delete(bestId);
-
-        results.push({ ...det, trackId: bestId });
+        return { ...det, trackId: matchedId };
       } else {
         const id = this.nextId++;
 
@@ -85,11 +100,13 @@ export class IouTracker {
           classId: det.classId,
           missedFrames: 0,
           analyzed: false,
+          velocity: [0, 0],
+          hits: 1,
         });
 
-        results.push({ ...det, trackId: id });
+        return { ...det, trackId: id };
       }
-    }
+    });
 
     for (const id of unmatched) {
       const track = this.tracks.get(id)!;
