@@ -66,6 +66,7 @@ export function cropDetectionToDataUrl(
   det: Detection,
   maxDim = 512,
   quality = 0.85,
+  minAspectRatio = 0,
 ): string {
   const [x, y, w, h] = det.box;
 
@@ -84,11 +85,16 @@ export function cropDetectionToDataUrl(
 
   const safeW = Math.max(1, Math.min(w, sourceWidth - safeX));
   const safeH = Math.max(1, Math.min(h, sourceHeight - safeY));
+  const cropW = Math.min(sourceWidth, Math.max(safeW, safeH * minAspectRatio));
+  const cropX = Math.max(
+    0,
+    Math.min(sourceWidth - cropW, safeX + safeW / 2 - cropW / 2),
+  );
 
-  const scale = Math.min(1, maxDim / Math.max(safeW, safeH));
+  const scale = Math.min(1, maxDim / Math.max(cropW, safeH));
 
   const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(safeW * scale));
+  canvas.width = Math.max(1, Math.round(cropW * scale));
   canvas.height = Math.max(1, Math.round(safeH * scale));
 
   const ctx = canvas.getContext("2d");
@@ -99,9 +105,9 @@ export function cropDetectionToDataUrl(
 
   ctx.drawImage(
     source,
-    safeX,
+    cropX,
     safeY,
-    safeW,
+    cropW,
     safeH,
     0,
     0,

@@ -114,42 +114,14 @@ export default function Dashboard({
   const otherLabel = getOtherLabel(modeFilter);
 
   return (
-    <section className="mx-auto w-full max-w-6xl px-4 py-7 sm:px-6 lg:py-9">
-      <div className="mb-7 flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <p className="mb-2 font-mono text-[11px] uppercase tracking-[0.18em] text-accent">
-            ภาพรวมการตรวจจับ
-          </p>
-          <h2 className="text-2xl font-semibold tracking-tight text-white sm:text-3xl">
-            Dashboard
-          </h2>
-          <p className="mt-2 max-w-2xl text-sm text-slate-400">
-            สรุปจำนวนคนและผลจำแนกจากรอบตรวจจับที่บันทึกไว้ในเบราว์เซอร์นี้
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <button
-            onClick={() => onStartDetection("image")}
-            className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-ink transition hover:bg-teal-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-          >
-            ตรวจจับจากรูปภาพ
-          </button>
-          <button
-            onClick={() => onStartDetection("camera")}
-            className="rounded-md border border-line bg-panel px-4 py-2 text-sm font-medium text-slate-200 transition hover:border-accent hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-          >
-            เปิดกล้องสด
-          </button>
-        </div>
-      </div>
-
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-md border border-line bg-panel/70 px-4 py-3">
-        <p className="text-xs leading-relaxed text-slate-400">
+    <section className="w-full">
+      <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-panel px-4 py-3">
+        <p className="text-sm leading-relaxed text-slate-400">
           เก็บยอดสรุปสูงสุด 200 รอบในเบราว์เซอร์นี้ · ไม่บันทึกภาพหรือคำบรรยายบุคคล
         </p>
         <div className="flex flex-wrap items-center gap-2">
           <div
-            className="inline-flex rounded-md border border-line bg-ink p-1"
+            className="inline-flex rounded-lg border border-line bg-ink p-1"
             role="group"
             aria-label="กรองตามโหมดตรวจจับ"
           >
@@ -164,7 +136,7 @@ export default function Dashboard({
                 key={filter.id}
                 onClick={() => setModeFilter(filter.id)}
                 aria-pressed={modeFilter === filter.id}
-                className={`rounded px-2.5 py-1.5 text-xs transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${
+                className={`min-h-10 rounded px-2.5 py-1.5 text-xs transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${
                   modeFilter === filter.id
                     ? "bg-accent text-ink"
                     : "text-slate-400 hover:text-white"
@@ -177,7 +149,7 @@ export default function Dashboard({
           {history.length > 0 && !confirmClear && (
             <button
               onClick={() => setConfirmClear(true)}
-              className="rounded-md px-2.5 py-1.5 text-xs text-slate-500 transition hover:text-warn focus-visible:outline focus-visible:outline-2 focus-visible:outline-warn"
+              className="min-h-10 rounded-md px-2.5 py-1.5 text-xs text-slate-500 transition hover:text-warn focus-visible:outline focus-visible:outline-2 focus-visible:outline-warn"
             >
               ล้างประวัติ
             </button>
@@ -199,7 +171,7 @@ export default function Dashboard({
                 onClearHistory();
                 setConfirmClear(false);
               }}
-              className="rounded-md bg-warn px-3 py-1.5 text-xs font-medium text-ink transition hover:bg-orange-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-warn"
+            className="rounded-md bg-warn px-3 py-2 text-sm font-medium text-ink transition hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-warn"
             >
               ลบประวัติ
             </button>
@@ -224,12 +196,10 @@ export default function Dashboard({
           <p className="mx-auto mt-2 max-w-lg text-sm leading-relaxed text-slate-400">
             เมื่อจบรอบตรวจจับ ระบบจะบันทึกวันเวลา แหล่งภาพ และจำนวนที่จำแนกได้ไว้ในเบราว์เซอร์นี้
           </p>
-          <button
-            onClick={() => onStartDetection("image")}
-            className="mt-6 rounded-md bg-accent px-4 py-2 text-sm font-medium text-ink transition hover:bg-teal-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-          >
-            เริ่มจากรูปภาพ
-          </button>
+          <div className="mt-6 flex flex-wrap justify-center gap-2">
+            <button onClick={() => onStartDetection("image")} className="min-h-11 rounded-md bg-accent px-4 py-2 text-sm font-medium text-ink transition hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">เริ่มจากรูปภาพ</button>
+            <button onClick={() => onStartDetection("camera")} className="min-h-11 rounded-md border border-line bg-panel px-4 py-2 text-sm font-medium text-slate-200 transition hover:border-accent hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">เปิดกล้องสด</button>
+          </div>
         </section>
       ) : filteredHistory.length === 0 ? (
         <section className="rounded-lg border border-line bg-panel px-6 py-12 text-center">
@@ -243,7 +213,7 @@ export default function Dashboard({
       ) : (
         <>
           <section
-            className="mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-5"
+            className="mb-6 grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-line bg-line sm:grid-cols-3 xl:grid-cols-5"
             aria-label="ยอดรวมประวัติ"
           >
             <MetricCard label="รอบตรวจจับ" value={totals.sessions} />
@@ -279,11 +249,13 @@ export default function Dashboard({
                 {weeklyActivity.reduce((sum, day) => sum + day.people, 0)} คน
               </p>
             </div>
-            <div className="grid h-36 grid-cols-7 items-end gap-2 sm:gap-4">
+            <div className="grid h-36 grid-cols-7 items-end gap-2 sm:gap-4" aria-label="กราฟจำนวนคนที่ตรวจพบรายวันใน 7 วันล่าสุด">
               {weeklyActivity.map((day) => (
                 <div
                   key={day.key}
                   className="flex h-full flex-col items-center justify-end gap-2"
+                  role="img"
+                  aria-label={`${day.label}: ${day.people} คน`}
                 >
                   <span className="font-mono text-[10px] text-slate-500">
                     {day.people || ""}
@@ -303,6 +275,7 @@ export default function Dashboard({
                 </div>
               ))}
             </div>
+            <p className="mt-3 text-center text-xs text-slate-500">ตัวเลขบนแท่งคือจำนวนคนที่ตรวจพบในวันนั้น</p>
           </section>
 
           <section className="overflow-hidden rounded-lg border border-line bg-panel">
@@ -317,21 +290,42 @@ export default function Dashboard({
                 {filteredHistory.length} รอบ
               </span>
             </div>
-            <div className="overflow-x-auto">
+            <div className="divide-y divide-line lg:hidden">
+              {filteredHistory.slice(0, 20).map((entry) => (
+                <article key={entry.id} className="p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <h4 className="font-medium text-slate-100">{formatDate(entry.startedAt, true)}</h4>
+                      <p className="mt-1 text-xs text-slate-500">ใช้เวลา {formatDuration(entry.durationMs)}</p>
+                    </div>
+                    <span className="rounded-full bg-ink px-2.5 py-1 text-xs text-slate-500">{entry.source === "image" ? "รูปภาพ" : "กล้องสด"}</span>
+                  </div>
+                  <p className="mt-3 text-sm text-slate-300">{getModeLabel(entry.attireMode)}</p>
+                  <dl className="mt-3 grid grid-cols-2 gap-2">
+                    <MetricInline label="ตรวจพบคน" value={entry.peopleDetected} />
+                    <MetricInline label={targetLabel} value={entry.targetCount} tone="target" />
+                    <MetricInline label={otherLabel} value={entry.otherCount} tone="other" />
+                    <MetricInline label="ไม่แน่ใจ" value={entry.uncertainCount} tone="uncertain" />
+                  </dl>
+                </article>
+              ))}
+            </div>
+            <div className="hidden overflow-x-auto lg:block">
               <table className="w-full min-w-[720px] border-collapse text-left text-sm">
+                <caption className="sr-only">ประวัติการตรวจจับล่าสุดในเบราว์เซอร์นี้</caption>
                 <thead>
                   <tr className="border-b border-line text-[11px] text-slate-500">
-                    <th className="px-5 py-3 font-medium">วันเวลา</th>
-                    <th className="px-4 py-3 font-medium">แหล่งภาพ</th>
-                    <th className="px-4 py-3 font-medium">โหมด</th>
-                    <th className="px-4 py-3 text-right font-medium">คน</th>
-                    <th className="px-4 py-3 text-right font-medium">
+                    <th scope="col" className="px-5 py-3 font-medium">วันเวลา</th>
+                    <th scope="col" className="px-4 py-3 font-medium">แหล่งภาพ</th>
+                    <th scope="col" className="px-4 py-3 font-medium">โหมด</th>
+                    <th scope="col" className="px-4 py-3 text-right font-medium">คน</th>
+                    <th scope="col" className="px-4 py-3 text-right font-medium">
                       {targetLabel}
                     </th>
-                    <th className="px-4 py-3 text-right font-medium">
+                    <th scope="col" className="px-4 py-3 text-right font-medium">
                       {otherLabel}
                     </th>
-                    <th className="px-5 py-3 text-right font-medium">
+                    <th scope="col" className="px-5 py-3 text-right font-medium">
                       ไม่ชัด
                     </th>
                   </tr>
@@ -395,11 +389,37 @@ function MetricCard({
   }[tone];
 
   return (
-    <div className="min-h-24 rounded-lg border border-line bg-panel px-4 py-4">
+    <div className="min-h-24 bg-panel px-4 py-4">
       <p className="text-xs leading-relaxed text-slate-400">{label}</p>
       <p className={`mt-2 font-mono text-2xl font-semibold tabular-nums ${toneClass}`}>
         {value.toLocaleString("th-TH")}
       </p>
+    </div>
+  );
+}
+
+function MetricInline({
+  label,
+  value,
+  tone = "neutral",
+}: {
+  label: string;
+  value: number;
+  tone?: "neutral" | "target" | "other" | "uncertain";
+}) {
+  const toneClass = {
+    neutral: "text-white",
+    target: "text-accent",
+    other: "text-orange-300",
+    uncertain: "text-amber-300",
+  }[tone];
+
+  return (
+    <div className="rounded-md border border-line bg-ink/50 px-3 py-2">
+      <dt className="text-[11px] leading-relaxed text-slate-500">{label}</dt>
+      <dd className={`mt-1 font-mono text-lg font-semibold tabular-nums ${toneClass}`}>
+        {value.toLocaleString("th-TH")}
+      </dd>
     </div>
   );
 }

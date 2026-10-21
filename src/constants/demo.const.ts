@@ -11,10 +11,10 @@ export const BOX_COLORS = [
 ];
 
 export const ATTIRE_BOX_COLORS = {
-  target: "#5eead4",
-  other: "#fb923c",
-  uncertain: "#facc15",
-  pending: "#94a3b8",
+  target: "#087d6d",
+  other: "#a84f25",
+  uncertain: "#8f6500",
+  pending: "#61756b",
 };
 
 export const MODEL_INPUT_SIZE = 640;

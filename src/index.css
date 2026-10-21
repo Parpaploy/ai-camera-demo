@@ -6,13 +6,43 @@ html, body, #root {
   height: 100%;
 }
 
+html {
+  color-scheme: light;
+  scroll-behavior: smooth;
+}
+
 body {
   font-family: "IBM Plex Sans Thai", ui-sans-serif, system-ui, sans-serif;
-  background-color: #12151a;
-  color: #e7ecf3;
+  background-color: #f4f6f2;
+  color: #17332d;
+  min-width: 320px;
+  line-height: 1.55;
+}
+
+button, input, select, textarea {
+  font-family: inherit;
+}
+
+button:not(:disabled), summary, select {
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 2px solid #087d6d;
+  outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 ::selection {
-  background-color: #5eead4;
-  color: #12151a;
+  background-color: #087d6d;
+  color: #ffffff;
 }

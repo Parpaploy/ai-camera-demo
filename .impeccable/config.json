@@ -1,0 +1,14 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "overused-font",
+        "value": "inter",
+        "createdAt": "2026-10-21T08:15:19.941Z",
+        "reason": "false positive: current src/index.css uses IBM Plex Sans Thai; font was changed to match the user's requested badminton reference"
+      }
+    ]
+  }
+}

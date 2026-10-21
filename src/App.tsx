@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { COCO_CLASSES, detectObjects } from "./utils/yolo";
 import { IouTracker, type TrackedDetection } from "./utils/tracker";
 import {
@@ -39,9 +39,9 @@ import {
   parseGenderType,
 } from "./functions/demo.func";
 import type { BoxColorResolver, OllamaModel, PersonImageFrame } from "./functions/demo.func";
-import Dashboard from "./components/Dashboard";
+import Dashboard, { type DashboardView } from "./components/Dashboard";
 import { PersonEventRecorder } from "./utils/personEvents";
-import { getCameraId, queuePersonEvent, startDataSync } from "./utils/dataSync";
+import { getCameraId, getSyncState, queuePersonEvent, startDataSync, subscribeSync } from "./utils/dataSync";
 
 interface PersonFrameQueue {
   startedAt: number;
@@ -71,6 +71,29 @@ type CameraHistorySession = {
 
 type CameraSource = "browser" | "rdk-mipi";
 type CameraFrameSource = HTMLVideoElement | HTMLImageElement;
+type AppPage = "dashboard" | "detector";
+
+function getPageFromPath(pathname: string): AppPage {
+  return pathname.replace(/\/+$/, "").split("/").filter(Boolean)[0] === "detector"
+    ? "detector"
+    : "dashboard";
+}
+
+function getDashboardViewFromPath(pathname: string): DashboardView {
+  const view = pathname.replace(/\/+$/, "").split("/").filter(Boolean)[1];
+  if (view === "stats" || view === "events" || view === "local-history") {
+    return view === "local-history" ? "local" : view;
+  }
+  return "today";
+}
+
+function getPathForPage(page: AppPage, dashboardView: DashboardView = "today"): string {
+  if (page === "detector") return "/detector";
+  if (dashboardView === "today") return "/dashboard";
+  return dashboardView === "local"
+    ? "/dashboard/local-history"
+    : `/dashboard/${dashboardView}`;
+}
 
 function getFrameDimensions(source: CameraFrameSource) {
   return source instanceof HTMLVideoElement
@@ -201,10 +224,10 @@ async function waitForMipiBridge() {
 
 export default function App() {
   const envApiKey = import.meta.env.VITE_GEMINI_API_KEY ?? "";
+  const dataSync = useSyncExternalStore(subscribeSync, getSyncState);
 
-  const [page, setPage] = useState<"dashboard" | "detector">(() =>
-    window.history.state?.aiCameraPage === "detector" ? "detector" : "dashboard",
-  );
+  const [page, setPage] = useState<AppPage>(() => getPageFromPath(window.location.pathname));
+  const [dashboardView, setDashboardView] = useState<DashboardView>(() => getDashboardViewFromPath(window.location.pathname));
   const [mode, setMode] = useState<Mode>("image");
   const [status, setStatus] = useState<Status>("idle");
   const [detections, setDetections] = useState<TrackedDetection[]>([]);
@@ -483,7 +506,7 @@ export default function App() {
 
       try {
         thumbnail = queuedFrames?.[queuedFrames.length - 1]?.dataUrl ?? cropDetectionToDataUrl(source, det);
-        dashboardThumbnail = queuedFrames?.[queuedFrames.length - 1]?.dataUrl ?? cropDetectionToDataUrl(source, det, 320, 0.65);
+        dashboardThumbnail = queuedFrames?.[queuedFrames.length - 1]?.dataUrl ?? cropDetectionToDataUrl(source, det, 320, 0.65, 0.58);
       } catch (err) {
         if (epoch !== analysisEpochRef.current || !trackerRef.current.hasTrack(trackId)) return;
         console.error(err);
@@ -845,7 +868,7 @@ export default function App() {
           if (queue.frames.length < PERSON_QUEUE_FRAME_COUNT && readyToSample) {
             try {
               queue.frames.push({
-                dataUrl: cropDetectionToDataUrl(source, det, 384, 0.72),
+                dataUrl: cropDetectionToDataUrl(source, det, 384, 0.72, 0.58),
                 frameIndex: queue.frames.length + 1,
                 elapsedMs: sampleNow - queue.startedAt,
               });
@@ -1125,14 +1148,29 @@ export default function App() {
     navigatePage("dashboard");
   };
 
-  const navigatePage = (nextPage: "dashboard" | "detector") => {
-    if (nextPage === page) return;
+  const navigatePage = (nextPage: AppPage) => {
+    const nextPath = getPathForPage(nextPage, dashboardView);
+    if (nextPage === page && window.location.pathname === nextPath) return;
     window.history.pushState(
-      { ...(window.history.state ?? {}), aiCameraPage: nextPage },
+      { ...(window.history.state ?? {}), aiCameraPage: nextPage, aiCameraDashboardView: dashboardView },
       "",
-      window.location.href,
+      `${nextPath}${window.location.search}${window.location.hash}`,
     );
     setPage(nextPage);
+    window.scrollTo(0, 0);
+  };
+
+  const navigateDashboardView = (nextView: DashboardView) => {
+    const nextPath = getPathForPage("dashboard", nextView);
+    if (page === "dashboard" && window.location.pathname === nextPath) return;
+    window.history.pushState(
+      { ...(window.history.state ?? {}), aiCameraPage: "dashboard", aiCameraDashboardView: nextView },
+      "",
+      `${nextPath}${window.location.search}${window.location.hash}`,
+    );
+    setPage("dashboard");
+    setDashboardView(nextView);
+    window.scrollTo(0, 0);
   };
 
   const startDetectionFromDashboard = (nextMode: Mode) => {
@@ -1141,22 +1179,41 @@ export default function App() {
   };
 
   useEffect(() => {
-    const currentState = window.history.state;
-    if (currentState?.aiCameraPage !== "dashboard" && currentState?.aiCameraPage !== "detector") {
+    const currentPage = getPageFromPath(window.location.pathname);
+    const currentDashboardView = getDashboardViewFromPath(window.location.pathname);
+    const canonicalPath = getPathForPage(currentPage, currentDashboardView);
+    if (window.location.pathname !== canonicalPath) {
       window.history.replaceState(
-        { ...(currentState ?? {}), aiCameraPage: page },
+        { ...(window.history.state ?? {}), aiCameraPage: currentPage, aiCameraDashboardView: currentDashboardView },
         "",
-        window.location.href,
+        `${canonicalPath}${window.location.search}${window.location.hash}`,
       );
     }
-    const handlePopState = (event: PopStateEvent) => {
-      const nextPage = event.state?.aiCameraPage === "detector" ? "detector" : "dashboard";
+    const handlePopState = () => {
+      const nextPage = getPageFromPath(window.location.pathname);
+      const nextDashboardView = nextPage === "dashboard"
+        ? getDashboardViewFromPath(window.location.pathname)
+        : window.history.state?.aiCameraDashboardView === "stats" ||
+            window.history.state?.aiCameraDashboardView === "events" ||
+            window.history.state?.aiCameraDashboardView === "local"
+          ? window.history.state.aiCameraDashboardView as DashboardView
+          : "today";
+      const nextPath = getPathForPage(nextPage, nextDashboardView);
+      if (window.location.pathname !== nextPath) {
+        window.history.replaceState(
+          { ...(window.history.state ?? {}), aiCameraPage: nextPage, aiCameraDashboardView: nextDashboardView },
+          "",
+          `${nextPath}${window.location.search}${window.location.hash}`,
+        );
+      }
       if (nextPage === "dashboard") stopCamera();
       setPage(nextPage);
+      setDashboardView(nextDashboardView);
+      window.scrollTo(0, 0);
     };
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
-  }, [page, stopCamera]);
+  }, [stopCamera]);
 
   const handleAttireModeChange = (nextMode: AttireDetectionMode) => {
     if (cameraActive) stopCamera();
@@ -1246,37 +1303,35 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-ink text-slate-100">
-      <header className="border-b border-line px-6 py-5">
-        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4">
-          <div>
-            <p className="font-mono text-xs uppercase tracking-[0.2em] text-accent">
-              browser detection · selectable vision AI
-            </p>
-            <h1 className="text-xl font-semibold">
-              YOLOv8 · AI Attire Detection
-            </h1>
+      <a href="#main-content" className="sr-only z-50 rounded-md bg-accent px-4 py-2 font-semibold text-ink focus:not-sr-only focus:fixed focus:left-4 focus:top-4">
+        ข้ามไปยังเนื้อหาหลัก
+      </a>
+      {(dataSync.authorized || page === "detector") && <header className="border-b border-line bg-panel px-4 py-2 sm:px-6">
+        <div className="mx-auto flex max-w-screen-2xl flex-wrap items-center justify-between gap-x-5 gap-y-2">
+          <div className="min-w-0">
+            <h1 className="font-display text-lg font-semibold tracking-tight text-white sm:text-xl">AI Camera <span className="hidden border-l border-line pl-2 font-sans text-sm font-normal text-slate-400 sm:inline">ตรวจจับและวิเคราะห์บุคคล</span></h1>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex w-full flex-wrap items-center justify-between gap-3 lg:w-auto lg:justify-end">
             <nav
-              className="inline-flex rounded-md border border-line bg-panel p-1"
-              aria-label="หน้าหลัก"
+              className="inline-flex rounded-lg bg-ink p-1"
+              aria-label="เมนูหลัก"
             >
               <button
                 onClick={openDashboard}
                 aria-current={page === "dashboard" ? "page" : undefined}
-                className={`rounded px-3 py-1.5 text-sm transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${
+              className={`min-h-11 rounded px-4 py-2 text-sm font-medium transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${
                   page === "dashboard"
                     ? "bg-accent text-ink"
                     : "text-slate-300 hover:text-white"
                 }`}
               >
-                Dashboard
+                ภาพรวม
               </button>
               <button
                 onClick={() => navigatePage("detector")}
                 aria-current={page === "detector" ? "page" : undefined}
-                className={`rounded px-3 py-1.5 text-sm transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${
+              className={`min-h-11 rounded px-4 py-2 text-sm font-medium transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${
                   page === "detector"
                     ? "bg-accent text-ink"
                     : "text-slate-300 hover:text-white"
@@ -1285,8 +1340,9 @@ export default function App() {
                 ตรวจจับ
               </button>
             </nav>
-            <label className="flex items-center gap-2 text-xs text-slate-400">
-              AI
+            {page === "detector" && <label className="flex items-center gap-2 text-sm text-slate-300">
+              <span className="hidden sm:inline">AI สำหรับวิเคราะห์ภาพ</span>
+              <span className="sm:hidden">AI</span>
               <select
                 value={aiProvider}
                 onChange={(event) => {
@@ -1294,43 +1350,50 @@ export default function App() {
                   setAiProvider(next);
                   if (next === "gemini" && !apiKey.trim()) setShowApiKeyInput(true);
                 }}
-                className="rounded-md border border-line bg-panel px-3 py-2 text-sm text-slate-200 outline-none focus:border-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+                className="min-h-11 rounded-md border border-line bg-panel px-3 py-2 text-sm text-slate-100 outline-none focus:border-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                 aria-label="เลือก AI สำหรับวิเคราะห์ภาพ"
               >
                 <option value="gemini">Gemini</option>
                 <option value="ollama">Ollama</option>
               </select>
-            </label>
-            {aiProvider === "gemini" ? (
+            </label>}
+            {page === "detector" && (aiProvider === "gemini" ? (
               <button
                 onClick={() => setShowApiKeyInput((value) => !value)}
-                className="font-mono text-xs text-slate-400 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+                aria-expanded={showApiKeyInput}
+                className="rounded-md px-2 py-1 text-sm text-slate-300 underline decoration-line underline-offset-4 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
               >
-                {apiKey ? "Gemini API key ✓" : "ตั้งค่า Gemini API key"}
+                {apiKey ? "จัดการ Gemini" : "ตั้งค่า Gemini"}
               </button>
             ) : (
-              <span className="font-mono text-xs text-slate-400" role="status">
-                {ollamaStatus === "loading" ? "กำลังเชื่อม Ollama…" :
-                  ollamaStatus === "ready" ? `Ollama · ${ollamaModel}` : "Ollama ยังไม่พร้อม"}
-              </span>
-            )}
+              <label className="flex items-center gap-2 text-xs text-slate-400">
+                <span className="sr-only">โมเดล Ollama</span>
+                <select value={ollamaModel} onChange={(event) => setOllamaModel(event.target.value)} disabled={ollamaStatus !== "ready" || !ollamaModels.length} aria-label="โมเดล Ollama" className="min-h-11 max-w-48 rounded-md border border-line bg-ink px-3 text-sm text-slate-100 disabled:opacity-50">
+                  {ollamaModels.length ? ollamaModels.map((model) => <option key={model.name} value={model.name}>{model.name}</option>) : <option value="">{ollamaStatus === "loading" ? "กำลังเชื่อมต่อ…" : "ไม่พบโมเดล"}</option>}
+                </select>
+              </label>
+            ))}
           </div>
         </div>
 
-        {showApiKeyInput && aiProvider === "gemini" && (
-          <div className="mx-auto mt-3 flex max-w-6xl flex-wrap items-center gap-2">
+        {page === "detector" && showApiKeyInput && aiProvider === "gemini" && (
+          <div id="gemini-settings" className="mx-auto mt-3 flex max-w-screen-2xl flex-wrap items-center gap-3 rounded-lg border border-line bg-panel p-4">
+            <label htmlFor="gemini-key" className="w-full text-sm font-medium text-slate-200">Gemini API key</label>
             <input
+              id="gemini-key"
               type="password"
-              placeholder="Gemini API key (AIza...)"
+              autoComplete="off"
+              aria-label="Gemini API key"
+              placeholder="วาง API key ที่นี่"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
-              className="w-72 rounded-md border border-line bg-panel px-3 py-1.5 font-mono text-xs text-slate-200 outline-none focus:border-accent"
+              className="min-w-0 flex-1 rounded-md border border-line bg-ink px-3 py-2 text-sm text-slate-100 outline-none focus:border-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent sm:max-w-md"
             />
             <button
               type="button"
               onClick={handleUseEnvApiKey}
               disabled={!envApiKey}
-              className="rounded-md border border-line px-3 py-1.5 text-xs text-slate-300 transition hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-40"
+              className="rounded-md border border-line px-3 py-2 text-sm text-slate-200 transition hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-40"
             >
               ใช้ API key จาก .env
             </button>
@@ -1340,58 +1403,49 @@ export default function App() {
                 setApiKey("");
                 sessionStorage.removeItem(SESSION_API_KEY);
               }}
-              className="rounded-md border border-line px-3 py-1.5 text-xs text-slate-400 transition hover:border-warn hover:text-warn"
+              className="rounded-md border border-line px-3 py-2 text-sm text-slate-300 transition hover:border-warn hover:text-warn"
             >
               ล้าง
             </button>
-            <span className="text-xs text-slate-500">
+            <span className="text-sm text-slate-300">
               {envApiKey
                 ? "มี API key จาก .env · ค่าที่กรอกเองจะ override"
                 : "ไม่พบ API key ใน .env · กรุณากรอกเอง"}
             </span>
           </div>
         )}
-        {aiProvider === "ollama" && (
-          <div className="mx-auto mt-3 flex max-w-6xl flex-wrap items-center gap-3" aria-live="polite">
-            <label className="flex items-center gap-2 text-xs text-slate-400">
-              โมเดล Ollama
-              <select
-                value={ollamaModel}
-                onChange={(event) => setOllamaModel(event.target.value)}
-                disabled={ollamaStatus !== "ready" || !ollamaModels.length}
-                className="max-w-64 rounded-md border border-line bg-panel px-3 py-1.5 text-xs text-slate-200 outline-none focus:border-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {ollamaModels.length ? ollamaModels.map((model) => (
-                  <option key={model.name} value={model.name}>{model.name}</option>
-                )) : <option value="">ไม่พบโมเดล</option>}
-              </select>
-            </label>
-            {ollamaStatus === "error" ? (
-              <span className="text-xs text-warn" role="alert">
-                {ollamaError} · ตรวจ OLLAMA_BASE_URL ใน .env.server
-              </span>
-            ) : (
-              <span className="text-xs text-slate-500">
-                ใช้โมเดลที่รองรับภาพ เช่น qwen3.5:2b · ไม่ต้องใช้ API key
-              </span>
-            )}
-          </div>
-        )}
-      </header>
+        {page === "detector" && aiProvider === "ollama" && ollamaStatus === "error" && <p className="mx-auto mt-2 max-w-screen-2xl text-xs text-warn" role="alert">{ollamaError} · ตรวจ OLLAMA_BASE_URL ใน .env.server</p>}
+      </header>}
 
       {page === "dashboard" ? (
         <Dashboard
           history={history}
           onStartDetection={startDetectionFromDashboard}
           onClearHistory={handleClearHistory}
+          view={dashboardView}
+          onViewChange={navigateDashboardView}
         />
       ) : (
-      <main className="mx-auto max-w-5xl px-6 py-8">
-        <div className="mb-4 flex flex-wrap items-center gap-3">
-          <div className="inline-flex rounded-md border border-line bg-panel p-1">
+      <main
+        id="main-content"
+        className={`mx-auto max-w-screen-2xl px-4 sm:px-6 lg:px-8 lg:grid lg:grid-cols-[minmax(15rem,17rem)_minmax(0,1fr)] lg:gap-4 ${
+          mode === "camera"
+            ? "py-3 lg:h-[calc(100dvh-4.5rem)] lg:min-h-0 lg:overflow-hidden"
+            : "py-6 sm:py-8"
+        }`}
+      >
+        <aside className="mb-4 min-w-0 space-y-4 lg:mb-0 lg:min-h-0 lg:overflow-y-auto lg:pr-2" aria-label="ตั้งค่าการตรวจจับ">
+        <div className={mode === "camera" ? "mb-1" : "mb-6"}>
+          <h2 className={`font-semibold tracking-tight text-white ${mode === "camera" ? "text-xl" : "text-2xl"}`}>ตรวจจับบุคคล</h2>
+          <p className="mt-1 text-sm text-slate-400">{mode === "camera" ? "เลือกกล้อง เปิดภาพสด แล้วดูผลทางขวา" : "เลือกรูปภาพ แล้วเริ่มวิเคราะห์"}</p>
+        </div>
+        <div className="mb-2 text-xs font-semibold text-slate-300">แหล่งภาพ</div>
+        <div className="flex flex-wrap items-center gap-2">
+          <div role="group" aria-label="รูปแบบการตรวจจับ" className="grid w-full grid-cols-2 rounded-lg border border-line bg-panel p-1">
             <button
               onClick={() => switchMode("image")}
-              className={`rounded px-4 py-1.5 text-sm font-medium transition ${
+              aria-pressed={mode === "image"}
+                className={`min-h-11 rounded px-2 py-1.5 text-sm font-medium transition ${
                 mode === "image"
                   ? "bg-accent text-ink"
                   : "text-slate-300 hover:text-white"
@@ -1401,7 +1455,8 @@ export default function App() {
             </button>
             <button
               onClick={() => switchMode("camera")}
-              className={`rounded px-4 py-1.5 text-sm font-medium transition ${
+              aria-pressed={mode === "camera"}
+                className={`min-h-11 rounded px-2 py-1.5 text-sm font-medium transition ${
                 mode === "camera"
                   ? "bg-accent text-ink"
                   : "text-slate-300 hover:text-white"
@@ -1411,35 +1466,39 @@ export default function App() {
             </button>
           </div>
 
-          <div className="inline-flex rounded-md border border-line bg-panel p-1">
-            {ATTIRE_DETECTION_MODES.map((opt) => (
-              <button
-                key={opt.id}
-                onClick={() => handleAttireModeChange(opt.id)}
-                title={opt.description}
-                className={`rounded px-4 py-1.5 text-sm font-medium transition ${
-                  attireMode === opt.id
-                    ? "bg-accent text-ink"
-                    : "text-slate-300 hover:text-white"
-                }`}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
         </div>
-        <p className="mb-6 text-xs text-slate-500">
-          {ATTIRE_DETECTION_MODES.find((m) => m.id === attireMode)?.description}
-        </p>
+        <div className="mb-2 text-xs font-semibold text-slate-300">ประเภทการวิเคราะห์</div>
+        <div role="group" aria-label="ประเภทการวิเคราะห์" className="grid gap-2">
+          {ATTIRE_DETECTION_MODES.map((opt) => (
+            <button
+              key={opt.id}
+              onClick={() => handleAttireModeChange(opt.id)}
+              aria-pressed={attireMode === opt.id}
+              title={opt.description}
+              className={`min-h-10 rounded-lg border px-3 py-2 text-left text-sm font-medium transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
+                attireMode === opt.id
+                  ? "border-accent bg-accent/10 text-accent"
+                  : "border-line bg-panel text-slate-300 hover:border-slate-500 hover:text-white"
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        {mode === "image" && (
+          <p className="text-sm text-slate-300">
+            {ATTIRE_DETECTION_MODES.find((m) => m.id === attireMode)?.description}
+          </p>
+        )}
 
-        <section className="mb-6 rounded-lg border border-line bg-panel p-5">
+        <section className="rounded-xl border border-line bg-panel p-4">
           {mode === "image" ? (
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="grid gap-3">
               <button
                 onClick={() => fileInputRef.current?.click()}
-                className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-ink transition hover:opacity-90"
+                className="min-h-11 rounded-md bg-accent px-4 py-2 text-sm font-medium text-ink transition hover:brightness-110"
               >
-                เลือกรูปภาพ
+                {imageUrl ? "เปลี่ยนรูปภาพ" : "เลือกรูปภาพ"}
               </button>
 
               <input
@@ -1457,7 +1516,7 @@ export default function App() {
                   status === "loading-model" ||
                   status === "running"
                 }
-                className="rounded-md border border-line px-4 py-2 text-sm font-medium transition hover:border-accent disabled:cursor-not-allowed disabled:opacity-40"
+                className="min-h-11 rounded-md border border-line px-4 py-2 text-sm font-medium transition hover:border-accent disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {status === "loading-model" && "กำลังโหลดโมเดล..."}
                 {status === "running" && "กำลังตรวจจับ..."}
@@ -1469,20 +1528,20 @@ export default function App() {
 
               {inferenceMs !== null && status === "done" && (
                 <span className="font-mono text-xs text-slate-400">
-                  YOLO: {inferenceMs.toFixed(0)}ms · {detections.length} objects
+                  ตรวจจับ {detections.length} รายการ · {inferenceMs.toFixed(0)} ms
                 </span>
               )}
             </div>
           ) : (
             <>
-              <div className="mb-4 flex flex-wrap items-center gap-3">
+              <div className="mb-4 grid gap-2">
                 <span className="text-sm font-medium text-slate-300">
                   แหล่งกล้อง
                 </span>
                 <div
                   role="group"
                   aria-label="เลือกแหล่งกล้อง"
-                  className="inline-flex rounded-md border border-line bg-ink p-1"
+                  className="grid grid-cols-2 rounded-md border border-line bg-ink p-1"
                 >
                   {(
                     [
@@ -1496,7 +1555,7 @@ export default function App() {
                       onClick={() => setCameraSource(source)}
                       disabled={cameraActive || status === "loading-model"}
                       aria-pressed={cameraSource === source}
-                      className={`rounded px-3 py-1.5 text-sm transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50 ${
+                      className={`min-h-11 rounded px-1 py-1.5 text-xs transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50 ${
                         cameraSource === source
                           ? "bg-accent text-ink"
                           : "text-slate-300 hover:text-white"
@@ -1513,12 +1572,12 @@ export default function App() {
                 </p>
               </div>
 
-              <div className="flex flex-wrap items-center gap-3">
+              <div className="grid gap-2">
                 {!cameraActive ? (
                   <button
                     onClick={startCamera}
                     disabled={status === "loading-model"}
-                    className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-ink transition hover:opacity-90 disabled:opacity-40"
+                    className="min-h-11 rounded-md bg-accent px-4 py-2 text-sm font-medium text-ink transition hover:brightness-110 disabled:opacity-40"
                   >
                     {status === "loading-model"
                       ? cameraSource === "rdk-mipi"
@@ -1532,13 +1591,13 @@ export default function App() {
                   <>
                     <button
                       onClick={stopCamera}
-                      className="rounded-md border border-warn/50 px-4 py-2 text-sm font-medium text-warn transition hover:bg-warn/10"
+                      className="min-h-11 rounded-md border border-warn/50 px-4 py-2 text-sm font-medium text-warn transition hover:bg-warn/10"
                     >
                       ปิดกล้อง
                     </button>
                     <button
                       onClick={handleResetTracking}
-                      className="rounded-md border border-line px-4 py-2 text-sm font-medium text-slate-300 transition hover:border-accent hover:text-accent"
+                      className="min-h-11 rounded-md border border-line px-4 py-2 text-sm font-medium text-slate-300 transition hover:border-accent hover:text-accent"
                       title="ล้าง track ID ทั้งหมด แล้ววิเคราะห์ทุกคนใหม่"
                     >
                       รีเซ็ต tracking
@@ -1547,12 +1606,8 @@ export default function App() {
                 )}
 
                 {cameraActive && (
-                  <span className="font-mono text-xs text-slate-400">
-                    {inferenceMs !== null && `${inferenceMs.toFixed(0)}ms · `}
-                    {detections.length} objects · ติดตาม{" "}
-                    {trackerRef.current.activeTrackCount} track · YOLO ทุก{" "}
-                    {CAMERA_DETECT_INTERVAL_MS}ms · {aiProvider === "ollama" ? "Ollama" : "Gemini"} เมื่อครบ{" "}
-                    {PERSON_QUEUE_FRAME_COUNT} ภาพ/คน ห่างกัน {PERSON_QUEUE_SAMPLE_INTERVAL_MS / 1000} วินาที · วิเคราะห์ครั้งเดียวต่อ ID
+                  <span className="text-sm text-slate-300" role="status" aria-live="polite">
+                    {personResults.length} คนในภาพ · {analyzingCount > 0 ? `กำลังวิเคราะห์ ${analyzingCount} คน` : `${analyzedCount} คนวิเคราะห์แล้ว`}
                   </span>
                 )}
               </div>
@@ -1570,7 +1625,12 @@ export default function App() {
             </div>
           )}
 
-          <div className="mt-4 border-t border-line pt-4">
+          <details className="mt-4 border-t border-line pt-3">
+            <summary className="cursor-pointer text-sm font-medium text-slate-300 outline-none hover:text-white focus-visible:rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
+              ตั้งค่าขั้นสูง <span className="ml-2 text-xs font-normal text-slate-400">โมเดลและความแม่นยำ</span>
+            </summary>
+            <div className="pt-4">
+          <div className="mb-4">
             <p className="mb-2 text-sm font-medium text-slate-300">
               โมเดล YOLO
             </p>
@@ -1597,10 +1657,10 @@ export default function App() {
             </p>
           </div>
 
-          <div className="mt-4 grid gap-4 border-t border-line pt-4 sm:grid-cols-2">
+          <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2">
             <div>
               <div className="mb-1 flex items-center justify-between text-sm text-slate-300">
-                <span>Confidence threshold</span>
+                <span>ความมั่นใจขั้นต่ำ</span>
                 <span className="font-mono text-xs text-accent">
                   {confThreshold.toFixed(2)}
                 </span>
@@ -1614,15 +1674,14 @@ export default function App() {
                 onChange={(e) => setConfThreshold(parseFloat(e.target.value))}
                 className="w-full accent-accent"
               />
-              <p className="mt-1 text-[11px] text-slate-500">
-                ค่าสูง = ตรวจจับแม่นแต่พลาดง่าย, ค่าต่ำ = จับได้เยอะแต่ noise
-                เยอะ
+              <p className="mt-1 text-xs text-slate-400">
+                ค่าสูงช่วยลดการจับผิด แต่อาจพลาดคนที่เห็นไม่ชัด
               </p>
             </div>
 
             <div>
               <div className="mb-1 flex items-center justify-between text-sm text-slate-300">
-                <span>IOU threshold (NMS)</span>
+                <span>ลดกรอบตรวจจับที่ซ้อนกัน</span>
                 <span className="font-mono text-xs text-accent">
                   {iouThreshold.toFixed(2)}
                 </span>
@@ -1636,8 +1695,8 @@ export default function App() {
                 onChange={(e) => setIouThreshold(parseFloat(e.target.value))}
                 className="w-full accent-accent"
               />
-              <p className="mt-1 text-[11px] text-slate-500">
-                ค่าต่ำ = ลบกล่องซ้อนกันมากขึ้น, ค่าสูง = เก็บกล่องซ้อนไว้มากขึ้น
+              <p className="mt-1 text-xs text-slate-400">
+                ค่าต่ำจะรวมกรอบที่ทับกันมากขึ้น
               </p>
             </div>
           </div>
@@ -1702,11 +1761,14 @@ export default function App() {
               </div>
             )}
           </div>
+            </div>
+          </details>
         </section>
+        </aside>
 
-        <section className="grid items-start gap-6 md:grid-cols-[2fr_1fr]">
-          <div className="min-w-0" ref={leftPanelRef}>
-            <div className="flex w-full flex-col overflow-hidden rounded-lg border border-line bg-panel p-4">
+        <section className={`grid min-w-0 gap-4 ${mode === "camera" ? "min-h-0 lg:h-full lg:grid-cols-[minmax(0,1.7fr)_minmax(18rem,1fr)]" : "items-start xl:grid-cols-[minmax(0,1.7fr)_minmax(18rem,1fr)]"}`}>
+          <div className={`min-w-0 ${mode === "camera" ? "min-h-0" : ""}`} ref={leftPanelRef}>
+            <div className={`flex w-full flex-col overflow-hidden rounded-xl border border-line bg-panel ${mode === "camera" ? "h-full min-h-0 p-2" : "p-4"}`}>
               {mode === "image" ? (
                 imageUrl ? (
                   <div className="relative">
@@ -1726,12 +1788,13 @@ export default function App() {
                     />
                   </div>
                 ) : (
-                  <div className="flex h-64 items-center justify-center rounded-md border border-dashed border-line text-sm text-slate-500">
-                    ยังไม่ได้เลือกรูปภาพ
+                  <div className="flex h-64 flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-line bg-ink/50 px-6 text-center text-sm text-slate-300">
+                    <span className="text-base font-medium text-slate-100">เลือกรูปภาพเพื่อเริ่มวิเคราะห์</span>
+                    <span>รองรับไฟล์ภาพจากอุปกรณ์นี้</span>
                   </div>
                 )
               ) : (
-                <div className="relative aspect-video w-full overflow-hidden rounded-md bg-black">
+                <div className="relative aspect-video w-full overflow-hidden rounded-lg bg-black lg:aspect-auto lg:h-full lg:min-h-0">
                   {cameraActive ? (
                     <>
                       {cameraSource === "rdk-mipi" ? (
@@ -1764,8 +1827,9 @@ export default function App() {
                       />
                     </>
                   ) : (
-                    <div className="flex h-full w-full items-center justify-center border border-dashed border-line text-sm text-slate-500">
-                      กดปุ่ม "เปิดกล้อง" เพื่อเริ่มตรวจจับแบบเรียลไทม์
+                    <div className="flex h-full w-full flex-col items-center justify-center gap-2 border border-dashed border-line px-6 text-center text-sm text-[#d6e0da]">
+                      <span className="text-base font-medium text-[#f5f8f4]">พร้อมเริ่มตรวจจับ</span>
+                      <span>เลือกแหล่งกล้อง แล้วกด “เปิดกล้อง”</span>
                     </div>
                   )}
                 </div>
@@ -1773,11 +1837,13 @@ export default function App() {
             </div>
           </div>
 
-          <div className="min-w-0">
+          <div className={`min-w-0 ${mode === "camera" ? "min-h-0" : ""}`}>
             <div
-              className="flex w-full flex-col overflow-y-auto rounded-lg border border-line bg-panel p-4"
+              className={`flex w-full flex-col rounded-xl border border-line bg-panel p-4 ${mode === "camera" ? "h-full min-h-0 overflow-hidden" : "min-h-64 overflow-y-auto"}`}
               style={
-                resultsPanelHeight
+                mode === "camera"
+                  ? undefined
+                  : resultsPanelHeight
                   ? {
                       height: resultsPanelHeight,
                       maxHeight: resultsPanelHeight,
@@ -1785,8 +1851,8 @@ export default function App() {
                   : undefined
               }
             >
-              <div className="mb-3 flex w-full shrink-0 items-center justify-between font-mono text-xs uppercase tracking-[0.15em] text-slate-400">
-                <div>ผลลัพธ์</div>
+              <div className="mb-3 flex w-full shrink-0 items-center justify-between border-b border-line pb-3 text-sm text-slate-300">
+                <div className="font-semibold text-slate-100">ผลการตรวจจับ</div>
                 <div>
                   {analyzingCount > 0 && (
                     <span>กำลังวิเคราะห์ {analyzingCount} คน...</span>
