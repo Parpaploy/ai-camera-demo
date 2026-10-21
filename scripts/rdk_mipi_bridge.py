@@ -215,6 +215,11 @@ class MipiCameraFeed:
                 self.state = "starting" if attempt < 3 else "error"
                 self.error = reason
                 self.condition.notify_all()
+            print(
+                f"[mipi] capture worker stopped ({attempt + 1}/4): {reason}; "
+                f"state={self.state}",
+                flush=True,
+            )
             if attempt < 3:
                 self.stop_event.wait(0.5)
 

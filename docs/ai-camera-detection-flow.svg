@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1500" height="1500" viewBox="0 0 1500 1500" role="img" aria-labelledby="title desc">
   <title id="title">Flowchart ระบบตรวจจับบุคคลของ ai-camera</title>
-  <desc id="desc">จากกล้อง MIPI หรือรูปภาพ ผ่าน YOLO และ Track ID เก็บภาพ crop สองเฟรมพร้อมลำดับและเวลา ส่งคิวให้ Gemini หนึ่ง request ต่อคน แล้วบันทึกผลเป็น event เดียวใน TiDB</desc>
+  <desc id="desc">จากกล้อง MIPI หรือรูป ผ่าน YOLO และ tracker เก็บภาพสามภาพต่อ ID ส่งให้ Gemini หรือ Ollama วิเคราะห์ แล้วบันทึกเฉพาะผลสำเร็จและภาพตัวอย่างหนึ่งภาพต่อ ID ลง TiDB</desc>
   <defs>
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#52718a"/></marker>
     <marker id="arrowTeal" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#0f9886"/></marker>
@@ -20,8 +20,8 @@
     </style>
   </defs>
   <rect width="1500" height="1500" fill="#f4f8fa"/>
-  <text x="48" y="60" class="title">ระบบตรวจจับ → วิเคราะห์ด้วย Gemini → บันทึกหลังบ้าน</text>
-  <text x="50" y="92" class="subtitle">หนึ่ง Track ID ต่อคนใน session · รวม crop 2 เฟรมพร้อมเวลาให้ Gemini ก่อนบันทึกผล</text>
+  <text x="48" y="60" class="title">ระบบตรวจจับ → วิเคราะห์ AI → บันทึกหลังบ้าน</text>
+  <text x="50" y="92" class="subtitle">หนึ่ง Track ID ต่อคนใน session · เก็บภาพเป็นชุด · บันทึกเมื่อวิเคราะห์เสร็จเท่านั้น</text>
 
   <!-- stage cards: snake flow, left-to-right then right-to-left -->
   <rect x="40" y="135" width="440" height="500" rx="20" fill="#eaf2f8" stroke="#cad9e4" stroke-width="2"/>
@@ -33,7 +33,7 @@
 
   <text x="68" y="178" class="lane-title">1 · รับภาพ</text>
   <text x="558" y="178" class="lane-title">2 · YOLO และติดตามคน</text>
-  <text x="1048" y="178" class="lane-title">3 · คิวภาพต่อ Track และ Gemini</text>
+  <text x="1048" y="178" class="lane-title">3 · คิวภาพต่อ Track และ AI</text>
   <text x="68" y="803" class="lane-title">6 · Dashboard</text>
   <text x="558" y="803" class="lane-title">5 · API และ TiDB</text>
   <text x="1048" y="803" class="lane-title">4 · คิวส่งข้อมูล</text>
@@ -65,8 +65,8 @@
   <text x="750" y="505" text-anchor="middle" class="small">เชื่อมกรอบคนเดิมข้ามเฟรม</text>
   <path d="M750 525V555" class="line"/>
   <rect x="568" y="555" width="364" height="58" rx="14" fill="#d5eee8" stroke="#9ccfc3" stroke-width="2"/>
-  <text x="750" y="580" text-anchor="middle" class="label">บันทึก event เบื้องต้น</text>
-  <text x="750" y="602" text-anchor="middle" class="small">เวลา · กล้อง · Track · YOLO</text>
+  <text x="750" y="580" text-anchor="middle" class="label">เก็บข้อมูลติดตามใน session</text>
+  <text x="750" y="602" text-anchor="middle" class="small">เวลา · กล้อง · Track · confidence (ยังไม่ส่ง SQL)</text>
 
   <!-- gemini -->
   <rect x="1058" y="225" width="364" height="72" rx="14" class="box" stroke="#d1bfe7"/>
@@ -75,40 +75,37 @@
   <path d="M932 486H1004V260H1058" class="teal"/>
   <path d="M1240 297V318" class="teal"/>
   <rect x="1058" y="318" width="364" height="88" rx="14" class="box" stroke="#d1bfe7"/>
-  <text x="1240" y="352" text-anchor="middle" class="label">คิวภาพ 2 เฟรมต่อคน</text>
-  <text x="1240" y="379" text-anchor="middle" class="small">เฟรม #1, #2 · เว้นอย่างน้อย 800 ms</text>
-  <text x="1240" y="398" text-anchor="middle" class="small">กำกับเวลาที่ผ่านไปจากเฟรมแรก</text>
+  <text x="1240" y="352" text-anchor="middle" class="label">คิวภาพ 3 ภาพต่อ ID</text>
+  <text x="1240" y="379" text-anchor="middle" class="small">เว้นอย่างน้อย 1.2 วินาที · มีลำดับและเวลา</text>
+  <text x="1240" y="398" text-anchor="middle" class="small">ไม่ครอปเพิ่มระหว่างรอ AI หรือหลังสำเร็จ</text>
   <path d="M1240 406V427" class="teal"/>
   <rect x="1058" y="427" width="364" height="78" rx="14" class="box" stroke="#d1bfe7"/>
-  <text x="1240" y="459" text-anchor="middle" class="label">ส่งทั้งคิวให้ Gemini</text>
-  <text x="1240" y="485" text-anchor="middle" class="small">หนึ่ง generateContent request ต่อ Track</text>
+  <text x="1240" y="459" text-anchor="middle" class="label">ส่งภาพชุดเดิมให้ Gemini หรือ Ollama</text>
+  <text x="1240" y="485" text-anchor="middle" class="small">หนึ่ง request ต่อ ID · retry เดิมสูงสุด 3 ครั้ง</text>
   <path d="M1240 505V526" class="teal"/>
   <rect x="1058" y="526" width="364" height="68" rx="14" class="box" stroke="#d1bfe7"/>
   <text x="1240" y="555" text-anchor="middle" class="label">วิเคราะห์ภาพทั้งคิว</text>
-  <text x="1240" y="580" text-anchor="middle" class="small">ประเภทชุด · เพศ · ช่วงอายุ</text>
+  <text x="1240" y="580" text-anchor="middle" class="small">ประเภทชุด · เพศ · ช่วงอายุ · รอผลจำแนก</text>
   <path d="M1240 594V615" class="teal"/>
   <rect x="1058" y="615" width="364" height="54" rx="14" fill="#e5dcf4" stroke="#c5afe0" stroke-width="2"/>
-  <text x="1240" y="638" text-anchor="middle" class="tag">ผล + crop ล่าสุด → event ID เดิม</text>
-  <text x="1240" y="658" text-anchor="middle" class="small">เก็บหนึ่ง event ต่อ Track / session</text>
+  <text x="1240" y="638" text-anchor="middle" class="tag">วิเคราะห์สำเร็จ → ผล + crop 1 ภาพ</text>
+  <text x="1240" y="658" text-anchor="middle" class="small">ไม่สำเร็จก็ยังไม่บันทึก · ใช้ event ID เดิม</text>
 
   <!-- transition to lower row -->
   <path d="M1240 669V850" class="teal"/>
-  <path d="M750 613V710H1028V890H1058" class="dash"/>
-  <text x="894" y="700" text-anchor="middle" class="small">metadata event ส่งเข้าคิวก่อน Gemini เสร็จ</text>
-
   <!-- queue at lower right -->
   <rect x="1058" y="850" width="364" height="78" rx="14" class="box" stroke="#e4cd98"/>
-  <text x="1240" y="883" text-anchor="middle" class="label">รวม revision ของ event เดิม</text>
-  <text x="1240" y="908" text-anchor="middle" class="small">staging coalesce ไม่สร้างแถวซ้ำ</text>
+  <text x="1240" y="883" text-anchor="middle" class="label">คิวเฉพาะผลวิเคราะห์สำเร็จ</text>
+  <text x="1240" y="908" text-anchor="middle" class="small">ผลไม่แน่ใจที่วิเคราะห์แล้วก็บันทึกได้</text>
   <path d="M1240 928V961" class="line"/>
   <rect x="1058" y="961" width="364" height="84" rx="14" class="box" stroke="#e4cd98"/>
-  <text x="1240" y="995" text-anchor="middle" class="label">IndexedDB outbox</text>
-  <text x="1240" y="1022" text-anchor="middle" class="small">พักคิวไว้ และลองส่งใหม่เมื่อออนไลน์</text>
+  <text x="1240" y="995" text-anchor="middle" class="label">รวม revision ใน IndexedDB outbox</text>
+  <text x="1240" y="1022" text-anchor="middle" class="small">พักคิวไว้และลองส่งใหม่เมื่อออนไลน์</text>
   <path d="M1240 1045V1080" class="line"/>
   <rect x="1058" y="1080" width="364" height="100" rx="14" fill="#fff1cf" stroke="#e4cd98" stroke-width="2"/>
   <text x="1240" y="1117" text-anchor="middle" class="label">POST /api/data/events</text>
   <text x="1240" y="1145" text-anchor="middle" class="small">ทุก ~5 วินาที · ไม่เกิน 4 events / ชุด</text>
-  <text x="1240" y="1167" text-anchor="middle" class="small">ภาพแนบเมื่อวิเคราะห์สำเร็จ</text>
+  <text x="1240" y="1167" text-anchor="middle" class="small">1 event + crop 1 ภาพ · เวลาอัปเดตทุก 30 วินาที</text>
 
   <!-- backend lower middle -->
   <path d="M1058 1130H1004V895H970" class="line"/>
@@ -138,5 +135,5 @@
   <text x="260" y="1172" text-anchor="middle" class="small">กดภาพเพื่อเปิดดูภาพใหญ่</text>
 
   <rect x="40" y="1290" width="1420" height="54" rx="14" fill="#fff" stroke="#d5e0e7"/>
-  <text x="750" y="1324" text-anchor="middle" class="small">หมายเหตุ: Track ID เป็นรหัสติดตามใน session; ถ้าหายจากภาพนานหรือเริ่ม session ใหม่ คนเดิมอาจได้ ID ใหม่ · ภาพนิ่งยังวิเคราะห์ภาพเดียว</text>
+  <text x="750" y="1324" text-anchor="middle" class="small">Track ID ใช้ใน session นี้ · หายเกิน 8 รอบตรวจหรือเริ่ม session ใหม่อาจได้ ID ใหม่ · pending เก่าถูกซ่อนโดยไม่ลบ · ภาพนิ่งใช้ pipeline เดียวกัน</text>
 </svg>

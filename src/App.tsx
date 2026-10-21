@@ -1050,23 +1050,34 @@ export default function App() {
     if (!cameraActive || cameraSource !== "rdk-mipi") return;
     let disposed = false;
     let timer: number;
+    let consecutiveFailures = 0;
+    let warningShown = false;
     const checkHealth = async () => {
       try {
         const response = await fetch("/api/mipi/status", {
-          signal: AbortSignal.timeout(5000), cache: "no-store",
+          signal: AbortSignal.timeout(8000), cache: "no-store",
         });
         if (!response.ok) throw new Error("ติดต่อบริการกล้อง MIPI ไม่ได้");
         const health = await response.json();
         if (disposed) return;
         if (health.state === "error" || health.state === "stopped") {
-          throw new Error(health.error || "กล้อง MIPI หยุดส่งภาพแล้ว");
+          stopCamera();
+          setStatus("error");
+          setErrorMsg(health.error || "กล้อง MIPI หยุดส่งภาพแล้ว");
+          return;
+        }
+        consecutiveFailures = 0;
+        if (health.state === "ready" && warningShown) {
+          warningShown = false;
+          setErrorMsg("");
         }
       } catch (error) {
         if (disposed) return;
-        stopCamera();
-        setStatus("error");
-        setErrorMsg(error instanceof Error ? error.message : "การเชื่อมต่อ MIPI ขาดหาย");
-        return;
+        consecutiveFailures++;
+        if (consecutiveFailures >= 3 && !warningShown) {
+          warningShown = true;
+          setErrorMsg("ติดต่อสถานะกล้อง MIPI ไม่สำเร็จชั่วคราว กำลังลองเชื่อมต่อใหม่");
+        }
       }
       if (!disposed) timer = window.setTimeout(checkHealth, 2000);
     };
