@@ -238,6 +238,30 @@ watchdog จำกัดจำนวน retry, worker ตายขณะถื�
 nohup scripts/watch_resources.sh 60 ~/ai-camera-resource-log.csv &
 ```
 
+### เปิด Dashboard สู่อินเทอร์เน็ตแบบปลอดภัย (โดเมนสาธารณะ)
+
+`rdk_mipi_bridge.py` เสิร์ฟแค่ HTTP ธรรมดา และ **`/api/mipi/*` (เปิด/ปิด/ดูสตรีมกล้อง)
+ไม่มีรหัสผ่านป้องกันเลย** — ห้ามเปิดส่วนนี้สู่อินเทอร์เน็ตสาธารณะเด็ดขาด ส่วน
+`/dashboard` ปลอดภัยกว่าเพราะ `/api/data/*` ต้อง login/มี `DATA_API_KEY` อยู่แล้ว
+
+ใช้ `deploy/caddy/Caddyfile` เป็น reverse proxy เปิดเฉพาะ `/dashboard`+`/api/data`
+สู่สาธารณะ (ขอ HTTPS cert ให้อัตโนมัติผ่าน Let's Encrypt) ส่วน `/detector`,
+`/api/mipi/*`, `/api/detect/*`, `/api/ai/*` ตอบ 403 เสมอ เข้าได้เฉพาะวง
+LAN/Tailscale ที่ชี้ตรงไปพอร์ต 8765 เท่านั้น:
+
+1. ตั้งค่า DNS (เช่น DuckDNS) ให้โดเมนชี้มาที่บอร์ด — ถ้าบอร์ดอยู่หลัง NAT ต้อง
+   port-forward 80/443 บนเราเตอร์ หรือใช้ tunnel (เช่น Tailscale Funnel) เอง
+   ตามเครือข่ายของคุณ อันนี้อยู่นอกเขตของโปรเจกต์นี้
+2. ติดตั้ง Caddy: `sudo apt install caddy` (หรือดู
+   [วิธีติดตั้งของ Caddy](https://caddyserver.com/docs/install))
+3. แก้โดเมนใน `deploy/caddy/Caddyfile` เป็นของคุณ แล้ว:
+   ```bash
+   sudo cp deploy/caddy/Caddyfile /etc/caddy/Caddyfile
+   sudo systemctl reload caddy
+   ```
+4. เปิด `https://<โดเมนของคุณ>/dashboard` — ควรเจอหน้า login ของ dashboard
+   ลอง `https://<โดเมนของคุณ>/detector` หรือ `/api/mipi/status` ควรได้ `403`
+
 ## SQL / TiDB และ Dashboard รายบุคคล
 
 เพิ่ม Data API สำหรับเก็บผลรายบุคคลใน MySQL/TiDB และ Dashboard ที่อ่านจาก SQL:
