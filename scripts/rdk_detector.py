@@ -41,6 +41,7 @@ PERSON_QUEUE_FRAME_COUNT = 3
 PERSON_QUEUE_SAMPLE_INTERVAL_MS = 1200
 PERSON_QUEUE_MAX_ATTEMPTS = 3
 EVENT_FLUSH_INTERVAL_S = 5
+CAMERA_START_COOLDOWN_S = 15
 EVENT_PUBLISH_THROTTLE_MS = 30_000
 OUTBOX_LIMIT = 2000
 GEMINI_MODEL = "gemini-3.5-flash-lite"
@@ -505,6 +506,17 @@ def fetch_json(url: str, timeout: float = 5) -> Optional[dict]:
         return None
 
 
+def trigger_camera_start(bridge_url: str) -> None:
+    # Fire-and-forget: the bridge keeps working on this in its own thread even
+    # if our short client-side timeout gives up before /api/mipi/start replies
+    # (it can take up to ~12s to confirm "ready"). We just poll /status next cycle.
+    try:
+        request = urllib.request.Request(f"{bridge_url}/api/mipi/start", method="POST")
+        urllib.request.urlopen(request, timeout=2)
+    except (urllib.error.URLError, TimeoutError, OSError):
+        pass
+
+
 def fetch_frame(url: str, timeout: float = 3) -> Optional[np.ndarray]:
     try:
         with urllib.request.urlopen(url, timeout=timeout) as response:
@@ -735,6 +747,7 @@ def main() -> None:
     recorder = PersonEventRecorder(io_worker.enqueue_event)
     track_queues: dict[int, TrackQueue] = {}
     session_active = False
+    last_start_attempt = 0.0
 
     stream = AnnotatedStream()
     stream_server = ThreadingHTTPServer((args.stream_host, args.stream_port), make_stream_handler(stream))
@@ -748,6 +761,15 @@ def main() -> None:
             loop_start = time.monotonic()
             status = fetch_json(f"{args.bridge_url}/api/mipi/status")
             ready = bool(status) and status.get("state") == "ready"
+
+            # Own the camera lifecycle: this process is meant to run unattended,
+            # so it starts the bridge's camera itself rather than waiting for
+            # someone to click "open camera" on the web app.
+            state = status.get("state") if status else None
+            if state in (None, "stopped", "error") and loop_start - last_start_attempt >= CAMERA_START_COOLDOWN_S:
+                last_start_attempt = loop_start
+                log(f"camera not running (state={state}); requesting start")
+                trigger_camera_start(args.bridge_url)
 
             if ready and not session_active:
                 session_active = True
