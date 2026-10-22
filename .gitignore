@@ -34,3 +34,6 @@ __pycache__/
 
 .env.server
 .env.detector
+
+# Per-board generated state (scripts/rdk_detector.py)
+scripts/rdk_camera_id.txt
