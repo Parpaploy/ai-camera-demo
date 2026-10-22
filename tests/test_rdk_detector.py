@@ -3,6 +3,7 @@
 Covers the pieces ported from the browser (src/utils/yolo.ts, tracker.ts,
 src/functions/demo.func.ts) so a regression there is caught without a board.
 """
+import argparse
 import sys
 import unittest
 from pathlib import Path
@@ -12,8 +13,13 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from rdk_detector import (
     ATTIRE_TAG_RE,
+    PERSON_CLASS_ID,
     YoloModel,
+    AnnotatedStream,
     IouTracker,
+    PersonEventRecorder,
+    TrackQueue,
+    _run_cycle,
     box_iou,
     crop_to_jpeg,
     nms,
@@ -119,6 +125,65 @@ class YoloModelTests(unittest.TestCase):
             self.assertIn("classId", det)
             self.assertIn("box", det)
             self.assertEqual(len(det["box"]), 4)
+
+
+class FakeModel:
+    """Returns pre-scripted detections per call instead of running onnxruntime."""
+
+    def __init__(self, detections_per_call):
+        self.calls = list(detections_per_call)
+
+    def detect(self, frame, conf_threshold, iou_threshold):
+        return self.calls.pop(0) if self.calls else []
+
+
+class FakeIoWorker:
+    def __init__(self):
+        self.jobs = []
+
+    def submit_job(self, track_id, frames):
+        self.jobs.append((track_id, frames))
+
+
+class RunCycleTests(unittest.TestCase):
+    """A person who steps out of frame for one cycle (occlusion) must not lose
+    their in-progress crop queue — regression test for a bug where the queue
+    was cleared based on this frame's detections instead of the tracker's own
+    missed-frame tolerance, silently dropping thumbnails on stored events."""
+
+    def setUp(self):
+        self.frame = np.full((480, 640, 3), 127, dtype=np.uint8)
+        self.tracker = IouTracker()
+        self.recorder = PersonEventRecorder(lambda event: None)
+        self.recorder.begin("sess", "cam-1", "camera", "student")
+        self.track_queues = {}
+        self.io_worker = FakeIoWorker()
+        self.stream = AnnotatedStream()
+        self.args = argparse.Namespace(conf_threshold=0.35, iou_threshold=0.45)
+        self.person = {"classId": PERSON_CLASS_ID, "className": "person", "score": 0.9, "box": (100.0, 100.0, 80.0, 160.0)}
+
+    def run_cycle(self, detections):
+        model = FakeModel([detections])
+        _run_cycle(self.frame, model, self.tracker, self.recorder, self.track_queues, self.io_worker, self.args, self.stream)
+
+    def test_queue_survives_one_missed_frame(self):
+        self.run_cycle([self.person])
+        self.assertEqual(len(self.track_queues), 1)
+        track_id = next(iter(self.track_queues))
+        frames_before = len(self.track_queues[track_id].frames)
+        self.assertGreater(frames_before, 0)
+
+        self.run_cycle([])  # occluded for one frame — tracker still holds the ID
+        self.assertIn(track_id, self.track_queues, "queue must survive a tolerated missed frame")
+        self.assertEqual(len(self.track_queues[track_id].frames), frames_before, "crops already captured must not be lost")
+
+    def test_queue_dropped_once_track_actually_expires(self):
+        self.run_cycle([self.person])
+        track_id = next(iter(self.track_queues))
+        for _ in range(9):  # exceeds IouTracker's default max_missed_frames=8
+            self.run_cycle([])
+        self.assertNotIn(track_id, self.track_queues)
+        self.assertFalse(self.tracker.has_track(track_id))
 
 
 if __name__ == "__main__":

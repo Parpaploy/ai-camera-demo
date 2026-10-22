@@ -815,9 +815,12 @@ def _run_cycle(frame, model, tracker, recorder, track_queues, io_worker, args, s
     recorder.observe(tracked, tracker.has_track)
     stream.publish(frame, tracked)
 
-    live_ids = {det["trackId"] for det in tracked}
+    # Use the tracker's own notion of "still tracked" (tolerates missed frames
+    # during brief occlusion), not just this frame's detections — otherwise a
+    # queue (and any in-flight classification's thumbnail) gets wiped on a
+    # single missed frame even though the person never actually left.
     for track_id in list(track_queues.keys()):
-        if track_id not in live_ids:
+        if not tracker.has_track(track_id):
             del track_queues[track_id]
 
     now = time.monotonic()
