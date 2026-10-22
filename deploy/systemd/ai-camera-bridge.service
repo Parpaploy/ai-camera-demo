@@ -1,0 +1,14 @@
+[Unit]
+Description=AI Camera - RDK X5 MIPI camera bridge
+After=network.target
+
+[Service]
+Type=simple
+User=sunrise
+WorkingDirectory=/home/sunrise/Desktop/ai-camera-demo
+ExecStart=/usr/bin/python3 scripts/rdk_mipi_bridge.py --width 1280 --height 720 --fps 30 --jpeg-quality 55
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

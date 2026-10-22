@@ -224,7 +224,7 @@ class MipiCameraFeed:
                 self.stop_event.wait(0.5)
 
 
-def create_handler(feed: MipiCameraFeed, web_root: Path):
+def create_handler(feed: MipiCameraFeed, web_root: Path, detect_port: int):
     class BridgeHandler(SimpleHTTPRequestHandler):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, directory=str(web_root), **kwargs)
@@ -243,8 +243,46 @@ def create_handler(feed: MipiCameraFeed, web_root: Path):
             if route == "/api/mipi/frame.jpg":
                 self._send_frame()
                 return
+            if route == "/api/detect" or route.startswith("/api/detect/"):
+                self._proxy_detect()
+                return
 
+            # SPA fallback: client-side routes like /dashboard aren't real files
+            # under web_root, so a direct browser navigation would 404 otherwise.
+            if not Path(self.translate_path(self.path)).is_file():
+                self.path = "/"
             super().do_GET()
+
+        def _proxy_detect(self) -> None:
+            # True streaming proxy (unlike _proxy_data) — the detector's
+            # /annotated.mjpg response never ends, so it can't be buffered.
+            target_path = self.path[len("/api/detect"):] or "/"
+            connection = http.client.HTTPConnection("127.0.0.1", detect_port, timeout=10)
+            headers_sent = False
+            try:
+                connection.request("GET", target_path)
+                response = connection.getresponse()
+                self.send_response(response.status)
+                headers_sent = True
+                for key in ("Content-Type", "Cache-Control", "Pragma", "Connection"):
+                    value = response.getheader(key)
+                    if value:
+                        self.send_header(key, value)
+                self.end_headers()
+                while True:
+                    chunk = response.read(65536)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+            except (OSError, http.client.HTTPException):
+                if not headers_sent:
+                    self._send_json(
+                        {"error": {"message": "Detector preview unavailable; run scripts/rdk_detector.py"}},
+                        status=503,
+                    )
+            finally:
+                connection.close()
 
         def do_POST(self) -> None:
             route = urlsplit(self.path).path
@@ -415,6 +453,8 @@ def main() -> None:
         help="MIPI host index from /etc/board_config.json; -1 auto-detects",
     )
     parser.add_argument("--web-root", type=Path, default=DEFAULT_WEB_ROOT)
+    parser.add_argument("--detect-port", type=int, default=8766,
+                         help="Port of rdk_detector.py's annotated-stream server, proxied at /api/detect")
     args = parser.parse_args()
 
     if args.width <= 0 or args.width % 2 or args.height <= 0 or args.height % 2:
@@ -436,7 +476,7 @@ def main() -> None:
     )
 
     server = ThreadingHTTPServer(
-        (args.host, args.port), create_handler(feed, args.web_root)
+        (args.host, args.port), create_handler(feed, args.web_root, args.detect_port)
     )
     server.daemon_threads = True
     print(

@@ -114,7 +114,7 @@ class FrameRouteTests(unittest.TestCase):
     def setUp(self):
         self.feed = MipiCameraFeed(16, 16, 20, 80, -1, frame_timeout=2, worker_target=frames)
         self.addCleanup(self.feed.stop_capture)
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), create_handler(self.feed, Path("dist/public")))
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), create_handler(self.feed, Path("dist/public"), 8766))
         self.port = self.server.server_address[1]
         thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         thread.start()

@@ -1,0 +1,16 @@
+[Unit]
+Description=AI Camera - RDK detector (YOLO + tracking + classify + record)
+After=network.target ai-camera-bridge.service ai-camera-data-api.service
+Wants=ai-camera-bridge.service ai-camera-data-api.service
+
+[Service]
+Type=simple
+User=sunrise
+WorkingDirectory=/home/sunrise/Desktop/ai-camera-demo
+EnvironmentFile=/home/sunrise/Desktop/ai-camera-demo/.env.detector
+ExecStart=/usr/bin/python3 scripts/rdk_detector.py --poll-interval-ms 800
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

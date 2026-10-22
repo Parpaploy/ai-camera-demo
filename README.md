@@ -211,6 +211,33 @@ watchdog จำกัดจำนวน retry, worker ตายขณะถื�
 `capture_worker`/SDK กล้องหรือ watchdog เลย ถ้าตัวตรวจจับค้างหรือ Gemini/Ollama
 ช้า จะไม่กระทบสตรีมกล้องหรือ logic เปิด-ปิด/restart ข้างบน
 
+### รันตอนบอร์ดบูต (systemd)
+
+ไฟล์ `.service` อยู่ที่ `deploy/systemd/` — 3 ตัว: bridge, Data API, detector
+(ไม่มีไฟล์สำหรับ Vite dev server เพราะใช้โหมด build แทน ให้ bridge เสิร์ฟเว็บ
+จาก `dist/public` ในพอร์ตเดียวกับกล้อง)
+
+1. `npm run build` ให้มี `dist/public` ก่อน
+2. คัดลอก `.env.detector.example` เป็น `.env.detector` แล้วกรอก `DATA_API_KEY`/
+   `GEMINI_API_KEY` จริง (`chmod 600` ไฟล์นี้ ห้าม commit เข้า git)
+3. แก้ `User=`/`WorkingDirectory=` ในไฟล์ `.service` ถ้า path/ผู้ใช้ไม่ตรงกับบอร์ดคุณ
+4. ติดตั้งและเปิดใช้งาน:
+   ```bash
+   sudo cp deploy/systemd/*.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now ai-camera-bridge ai-camera-data-api ai-camera-detector
+   ```
+5. เช็คสถานะ/log: `systemctl status ai-camera-detector`,
+   `journalctl -u ai-camera-detector -f`
+6. เปิดเว็บที่ `http://<IP บอร์ด>:8765` (bridge เสิร์ฟทั้งกล้องและเว็บในพอร์ตเดียว
+   ไม่ใช่ 5173 อีกต่อไปในโหมดนี้)
+
+ทดสอบความเสถียรระยะยาวด้วย `scripts/watch_resources.sh` (บันทึก CPU%/RSS ของ
+ทั้ง 3 service ลง CSV ทุก 60 วินาที ไว้ตรวจดูว่าหน่วยความจำไม่โตขึ้นเรื่อยๆ):
+```bash
+nohup scripts/watch_resources.sh 60 ~/ai-camera-resource-log.csv &
+```
+
 ## SQL / TiDB และ Dashboard รายบุคคล
 
 เพิ่ม Data API สำหรับเก็บผลรายบุคคลใน MySQL/TiDB และ Dashboard ที่อ่านจาก SQL:

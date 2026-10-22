@@ -1,0 +1,14 @@
+[Unit]
+Description=AI Camera - Data API (SQL/TiDB event storage + dashboard reads)
+After=network.target
+
+[Service]
+Type=simple
+User=sunrise
+WorkingDirectory=/home/sunrise/Desktop/ai-camera-demo
+ExecStart=/usr/bin/node --env-file=.env.server server/index.mjs
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
