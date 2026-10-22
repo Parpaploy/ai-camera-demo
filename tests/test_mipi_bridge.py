@@ -1,12 +1,16 @@
 """Hardware-independent lifecycle/fault injection tests (spawn real processes)."""
 import multiprocessing as mp
 import sys
+import threading
 import time
 import unittest
+import urllib.error
+import urllib.request
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from rdk_mipi_bridge import MipiCameraFeed
+from rdk_mipi_bridge import MipiCameraFeed, create_handler
 
 
 def frames(config, stop, buffer, metadata, lock):
@@ -102,6 +106,42 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(feed.latest_jpeg, b"jpeg")
         feed.stop_capture()
         self.assertFalse(mp.active_children())
+
+
+class FrameRouteTests(unittest.TestCase):
+    """The rdk_detector.py process polls this snapshot endpoint instead of the MJPEG stream."""
+
+    def setUp(self):
+        self.feed = MipiCameraFeed(16, 16, 20, 80, -1, frame_timeout=2, worker_target=frames)
+        self.addCleanup(self.feed.stop_capture)
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), create_handler(self.feed, Path("dist/public")))
+        self.port = self.server.server_address[1]
+        thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        thread.start()
+        # addCleanup runs LIFO: register server_close first so shutdown (which
+        # must happen before the socket is closed) runs ahead of it.
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+
+    def get(self, path):
+        try:
+            response = urllib.request.urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=2)
+            return response.status, response.read(), response.headers
+        except urllib.error.HTTPError as error:
+            return error.code, error.read(), error.headers
+
+    def test_frame_route_503_before_camera_ready(self):
+        status, _body, _headers = self.get("/api/mipi/frame.jpg")
+        self.assertEqual(status, 503)
+
+    def test_frame_route_returns_latest_jpeg_once_ready(self):
+        self.feed.start_capture()
+        self.assertEqual(self.feed.wait_until_ready(3)["state"], "ready")
+        status, body, headers = self.get("/api/mipi/frame.jpg")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("Content-Type"), "image/jpeg")
+        self.assertEqual(body, b"jpeg")
+        self.assertEqual(int(headers.get("X-Frame-Id")), self.feed.frame_id)
 
 
 if __name__ == "__main__":

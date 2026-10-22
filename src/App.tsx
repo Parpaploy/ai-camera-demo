@@ -799,6 +799,10 @@ export default function App() {
 
     if (!isCurrent()) return;
 
+    // RDK X5 runs its own detect/track/classify pipeline (scripts/rdk_detector.py) and
+    // posts results straight to the Data API; the browser only shows the raw MJPEG stream.
+    if (activeCameraSourceRef.current === "rdk-mipi") return;
+
     const sourceReady =
       source &&
       (source instanceof HTMLVideoElement
@@ -998,7 +1002,11 @@ export default function App() {
         startedAt: Date.now(),
         attireMode: attireModeRef.current,
       };
-      eventRecorderRef.current.begin(cameraHistorySessionRef.current.id, getCameraId(), "camera", attireModeRef.current);
+      // RDK X5 posts events from scripts/rdk_detector.py directly; this browser tab
+      // never observes tracks for that source, so it never starts a local recorder session.
+      if (cameraSource !== "rdk-mipi") {
+        eventRecorderRef.current.begin(cameraHistorySessionRef.current.id, getCameraId(), "camera", attireModeRef.current);
+      }
       setCameraActive(true);
       setStatus("running");
     } catch (err) {
@@ -1251,6 +1259,10 @@ export default function App() {
 
   const sortedDetections = [...detections].sort((a, b) => b.score - a.score);
 
+  // RDK X5 runs detection on-device; this tab shows the raw stream only, so the
+  // local per-person panel/AI controls (which would just stay empty) are hidden.
+  const isRdkLive = mode === "camera" && cameraSource === "rdk-mipi";
+
   const personResults = detections.filter(
     (det) => det.classId === PERSON_CLASS_ID(),
   );
@@ -1340,7 +1352,7 @@ export default function App() {
                 ตรวจจับ
               </button>
             </nav>
-            {page === "detector" && <label className="flex items-center gap-2 text-sm text-slate-300">
+            {page === "detector" && !isRdkLive && <label className="flex items-center gap-2 text-sm text-slate-300">
               <span className="hidden sm:inline">AI สำหรับวิเคราะห์ภาพ</span>
               <span className="sm:hidden">AI</span>
               <select
@@ -1357,7 +1369,7 @@ export default function App() {
                 <option value="ollama">Ollama</option>
               </select>
             </label>}
-            {page === "detector" && (aiProvider === "gemini" ? (
+            {page === "detector" && !isRdkLive && (aiProvider === "gemini" ? (
               <button
                 onClick={() => setShowApiKeyInput((value) => !value)}
                 aria-expanded={showApiKeyInput}
@@ -1376,7 +1388,7 @@ export default function App() {
           </div>
         </div>
 
-        {page === "detector" && showApiKeyInput && aiProvider === "gemini" && (
+        {page === "detector" && !isRdkLive && showApiKeyInput && aiProvider === "gemini" && (
           <div id="gemini-settings" className="mx-auto mt-3 flex max-w-screen-2xl flex-wrap items-center gap-3 rounded-lg border border-line bg-panel p-4">
             <label htmlFor="gemini-key" className="w-full text-sm font-medium text-slate-200">Gemini API key</label>
             <input
@@ -1414,7 +1426,7 @@ export default function App() {
             </span>
           </div>
         )}
-        {page === "detector" && aiProvider === "ollama" && ollamaStatus === "error" && <p className="mx-auto mt-2 max-w-screen-2xl text-xs text-warn" role="alert">{ollamaError} · ตรวจ OLLAMA_BASE_URL ใน .env.server</p>}
+        {page === "detector" && !isRdkLive && aiProvider === "ollama" && ollamaStatus === "error" && <p className="mx-auto mt-2 max-w-screen-2xl text-xs text-warn" role="alert">{ollamaError} · ตรวจ OLLAMA_BASE_URL ใน .env.server</p>}
       </header>}
 
       {page === "dashboard" ? (
@@ -1595,19 +1607,26 @@ export default function App() {
                     >
                       ปิดกล้อง
                     </button>
-                    <button
-                      onClick={handleResetTracking}
-                      className="min-h-11 rounded-md border border-line px-4 py-2 text-sm font-medium text-slate-300 transition hover:border-accent hover:text-accent"
-                      title="ล้าง track ID ทั้งหมด แล้ววิเคราะห์ทุกคนใหม่"
-                    >
-                      รีเซ็ต tracking
-                    </button>
+                    {cameraSource !== "rdk-mipi" && (
+                      <button
+                        onClick={handleResetTracking}
+                        className="min-h-11 rounded-md border border-line px-4 py-2 text-sm font-medium text-slate-300 transition hover:border-accent hover:text-accent"
+                        title="ล้าง track ID ทั้งหมด แล้ววิเคราะห์ทุกคนใหม่"
+                      >
+                        รีเซ็ต tracking
+                      </button>
+                    )}
                   </>
                 )}
 
-                {cameraActive && (
+                {cameraActive && cameraSource !== "rdk-mipi" && (
                   <span className="text-sm text-slate-300" role="status" aria-live="polite">
                     {personResults.length} คนในภาพ · {analyzingCount > 0 ? `กำลังวิเคราะห์ ${analyzingCount} คน` : `${analyzedCount} คนวิเคราะห์แล้ว`}
+                  </span>
+                )}
+                {cameraActive && cameraSource === "rdk-mipi" && (
+                  <span className="text-sm text-slate-300" role="status" aria-live="polite">
+                    RDK X5 กำลังตรวจจับและบันทึกข้อมูลอัตโนมัติ
                   </span>
                 )}
               </div>
@@ -1851,6 +1870,24 @@ export default function App() {
                   : undefined
               }
             >
+              {isRdkLive ? (
+                <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
+                  <p className="text-sm font-medium text-slate-100">
+                    RDK X5 กำลังตรวจจับและบันทึกข้อมูลอัตโนมัติ
+                  </p>
+                  <p className="max-w-xs text-xs text-slate-400">
+                    การตรวจจับ ติดตามบุคคล และวิเคราะห์การแต่งกายทำงานบนบอร์ด RDK X5
+                    (scripts/rdk_detector.py) แล้วส่งผลเข้าฐานข้อมูลตรง ดูสรุปผลได้ที่หน้าภาพรวม
+                  </p>
+                  <button
+                    onClick={openDashboard}
+                    className="min-h-11 rounded-md bg-accent px-4 py-2 text-sm font-medium text-ink transition hover:brightness-110"
+                  >
+                    ไปที่หน้าภาพรวม
+                  </button>
+                </div>
+              ) : (
+              <>
               <div className="mb-3 flex w-full shrink-0 items-center justify-between border-b border-line pb-3 text-sm text-slate-300">
                 <div className="font-semibold text-slate-100">ผลการตรวจจับ</div>
                 <div>
@@ -2054,6 +2091,8 @@ export default function App() {
                   </ul>
                 )}
               </div>
+              </>
+              )}
             </div>
           </div>
         </section>

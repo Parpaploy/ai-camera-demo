@@ -39,18 +39,44 @@ npm run dev
 ## ใช้กล้อง MIPI บน RDK X5
 
 บริการ `scripts/rdk_mipi_bridge.py` ใช้ `hobot_vio` ของ RDK X5 อ่านกล้อง MIPI
-แล้วส่งภาพแบบ MJPEG ให้หน้าเว็บ ส่วน YOLO และการวิเคราะห์ Gemini ยังทำงานในเบราว์เซอร์
-เหมือนเดิม
+แล้วส่งภาพแบบ MJPEG ให้หน้าเว็บ **การตรวจจับ ติดตามบุคคล และวิเคราะห์การแต่งกาย
+ทำงานอยู่บนบอร์ด** ในโปรเซสแยก `scripts/rdk_detector.py` ซึ่งดึงภาพจาก bridge
+มาประมวลผลด้วย YOLO (onnxruntime, CPU) แล้วส่งผลตรงเข้า Data API — หน้าเว็บฝั่ง
+กล้อง MIPI จึงแสดงแค่ภาพสตรีมสดและลิงก์ไปหน้าภาพรวม ไม่รันตรวจจับในเบราว์เซอร์
+(โหมด **กล้องเบราว์เซอร์/webcam** ยังรัน YOLO และ Gemini/Ollama ในเบราว์เซอร์เหมือนเดิม
+ไม่เปลี่ยนแปลง)
 
 1. คัดลอกโปรเจกต์ไปไว้บน RDK X5 และตรวจสอบว่าบอร์ดติดตั้ง RDK Python SDK,
-   `hobot_vio`, NumPy และ OpenCV แล้ว
+   `hobot_vio`, NumPy, OpenCV และ `onnxruntime` แล้ว (`pip3 install onnxruntime`
+   — เรียก Data API/Gemini ด้วย `urllib` ใน Python standard library อยู่แล้ว
+   ไม่ต้องติดตั้งไลบรารีเน็ตเวิร์กเพิ่ม)
 2. รันบริการกล้อง:
 
    ```bash
    python3 scripts/rdk_mipi_bridge.py
    ```
 
-3. สำหรับพัฒนา ให้เปิดอีกเทอร์มินัลบนบอร์ดแล้วรัน:
+3. เปิดอีกเทอร์มินัลบนบอร์ดแล้วรันบริการ Data API (ดู [docs/sql-dashboard.md](docs/sql-dashboard.md)
+   สำหรับตั้งค่า `.env.server` ก่อน):
+
+   ```bash
+   npm run data:dev
+   ```
+
+4. เปิดอีกเทอร์มินัลแล้วรันตัวตรวจจับ ส่งผลเข้า Data API ที่เพิ่งเปิดในข้อ 3:
+
+   ```bash
+   DATA_API_KEY=<ค่าเดียวกับใน .env.server> \
+   GEMINI_API_KEY=<Gemini API key ของคุณ> \
+   python3 scripts/rdk_detector.py
+   ```
+
+   ใช้ Ollama แทน Gemini ได้ด้วย `--ai-provider ollama --ollama-model <ชื่อโมเดล>`
+   (เรียกผ่าน Data API ที่ตั้งค่า `OLLAMA_BASE_URL` ไว้แล้ว ไม่ต้องตั้งค่าเพิ่มที่นี่)
+   ปรับโมเดล YOLO/ความแม่นยำได้ด้วย `--model-path`, `--conf-threshold`,
+   `--iou-threshold`, `--attire-mode {student,medical}`
+
+5. สำหรับพัฒนาฝั่งเว็บ ให้เปิดอีกเทอร์มินัลบนบอร์ดแล้วรัน:
 
    ```bash
    npm install
@@ -58,11 +84,12 @@ npm run dev
    ```
 
    เปิด `http://<IP ของ RDK X5>:5173` แล้วเลือก **กล้องสด → RDK X5 · MIPI**
-   ในหน้าแอป
+   ในหน้าแอป — หน้านี้**ไม่ต้องกรอก Gemini API key ในเบราว์เซอร์อีกต่อไป**
+   เพราะ `rdk_detector.py` ถือ key ไว้ฝั่งบอร์ดแล้ว
 
 สำหรับใช้งานแบบ build ให้รัน `npm run build` ก่อน จากนั้นเริ่มบริการกล้องตามข้อ 2
 แล้วเปิด `http://<IP ของ RDK X5>:8765` ได้เลย บริการจะเสิร์ฟไฟล์จาก `dist/public`
-และสตรีมภาพจากกล้องใน origin เดียวกัน
+และสตรีมภาพจากกล้องใน origin เดียวกัน (ข้อ 3–4 ยังต้องรันแยกเหมือนกัน)
 
 ปรับความละเอียดและเฟรมเรตได้ เช่น:
 
@@ -171,6 +198,11 @@ watchdog จำกัดจำนวน retry, worker ตายขณะถื�
 
 อ้างอิง signature ของ SDK:
 [RDK X5 Camera API](https://developer.d-robotics.cc/rdk_x_doc/en/Basic_Application/multi_media_sp_dev_api/RDK_X5/pydev_multimedia_api_x5/object_camera)
+
+`scripts/rdk_detector.py` (YOLO/ติดตาม/วิเคราะห์) รันเป็นโปรเซสแยกจาก bridge
+ข้างบนทั้งหมด — ดึงภาพผ่าน `GET /api/mipi/frame.jpg` เท่านั้น ไม่แตะ
+`capture_worker`/SDK กล้องหรือ watchdog เลย ถ้าตัวตรวจจับค้างหรือ Gemini/Ollama
+ช้า จะไม่กระทบสตรีมกล้องหรือ logic เปิด-ปิด/restart ข้างบน
 
 ## SQL / TiDB และ Dashboard รายบุคคล
 

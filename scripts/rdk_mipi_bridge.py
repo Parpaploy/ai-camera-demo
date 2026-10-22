@@ -240,6 +240,9 @@ def create_handler(feed: MipiCameraFeed, web_root: Path):
             if route == "/api/mipi/stream.mjpg":
                 self._send_stream()
                 return
+            if route == "/api/mipi/frame.jpg":
+                self._send_frame()
+                return
 
             super().do_GET()
 
@@ -304,6 +307,27 @@ def create_handler(feed: MipiCameraFeed, web_root: Path):
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
+
+        def _send_frame(self) -> None:
+            # Single-shot snapshot for the detector process; reuses the same
+            # lock/condition the MJPEG stream and status endpoint already use.
+            with feed.condition:
+                jpeg = feed.latest_jpeg
+                frame_id = feed.frame_id
+                if feed.state == "error" or jpeg is None:
+                    self._send_json(
+                        {"error": feed.error or "MIPI camera is unavailable"},
+                        status=503,
+                    )
+                    return
+
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Frame-Id", str(frame_id))
+            self.send_header("Content-Length", str(len(jpeg)))
+            self.end_headers()
+            self.wfile.write(jpeg)
 
         def _send_stream(self) -> None:
             deadline = time.monotonic() + 8
