@@ -21,6 +21,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional
 
@@ -530,6 +531,95 @@ def get_camera_id() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Annotated MJPEG preview — boxes/track IDs drawn on-device so a remote
+# dashboard viewer can see what's being detected without running inference.
+# ---------------------------------------------------------------------------
+
+def draw_detections(frame_bgr: np.ndarray, tracked: list[dict]) -> np.ndarray:
+    annotated = frame_bgr.copy()
+    for det in tracked:
+        x, y, w, h = (int(round(v)) for v in det["box"])
+        cv2.rectangle(annotated, (x, y), (x + w, y + h), (110, 220, 110), 2)
+        label = f"#{det['trackId']} {det['className']} {det['score'] * 100:.0f}%"
+        text_y = max(16, y - 6)
+        cv2.putText(annotated, label, (x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (110, 220, 110), 2, cv2.LINE_AA)
+    return annotated
+
+
+class AnnotatedStream:
+    def __init__(self):
+        self.condition = threading.Condition()
+        self.latest_jpeg: Optional[bytes] = None
+        self.frame_id = 0
+
+    def publish(self, frame_bgr: np.ndarray, tracked: list[dict]) -> None:
+        annotated = draw_detections(frame_bgr, tracked)
+        ok, buf = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 70])
+        if not ok:
+            return
+        with self.condition:
+            self.latest_jpeg = buf.tobytes()
+            self.frame_id += 1
+            self.condition.notify_all()
+
+    def clear(self) -> None:
+        with self.condition:
+            self.latest_jpeg = None
+            self.condition.notify_all()
+
+
+def make_stream_handler(stream: AnnotatedStream):
+    class StreamHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            if self.path.split("?", 1)[0] != "/annotated.mjpg":
+                self.send_response(404)
+                self.end_headers()
+                return
+
+            deadline = time.monotonic() + 8
+            with stream.condition:
+                while stream.latest_jpeg is None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        self.send_response(503)
+                        self.end_headers()
+                        return
+                    stream.condition.wait(timeout=remaining)
+
+            self.send_response(200)
+            self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Connection", "close")
+            self.end_headers()
+
+            self.connection.settimeout(5)
+            last_frame_id = -1
+            try:
+                while True:
+                    with stream.condition:
+                        stream.condition.wait_for(lambda: stream.frame_id != last_frame_id, timeout=2)
+                        jpeg = stream.latest_jpeg
+                        current_frame_id = stream.frame_id
+                    if jpeg is None or current_frame_id == last_frame_id:
+                        continue
+                    self.wfile.write(
+                        b"--frame\r\nContent-Type: image/jpeg\r\n"
+                        + f"Content-Length: {len(jpeg)}\r\n\r\n".encode("ascii")
+                        + jpeg + b"\r\n"
+                    )
+                    self.wfile.flush()
+                    last_frame_id = current_frame_id
+            except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
+                pass
+
+        def log_message(self, format: str, *args) -> None:  # noqa: A002 — matches http.server's signature
+            pass
+
+    return StreamHandler
+
+
+# ---------------------------------------------------------------------------
 # Background I/O: classification calls + outbox flush, off the detect loop.
 # ---------------------------------------------------------------------------
 
@@ -628,6 +718,8 @@ def main() -> None:
     parser.add_argument("--gemini-model", default=GEMINI_MODEL)
     parser.add_argument("--ollama-model", default="qwen3.5:2b")
     parser.add_argument("--poll-interval-ms", type=int, default=CAMERA_DETECT_INTERVAL_MS)
+    parser.add_argument("--stream-host", default="0.0.0.0")
+    parser.add_argument("--stream-port", type=int, default=8766)
     args = parser.parse_args()
 
     if not args.data_api_key:
@@ -644,7 +736,12 @@ def main() -> None:
     track_queues: dict[int, TrackQueue] = {}
     session_active = False
 
-    log(f"ready; camera_id={camera_id} model={args.model_path} provider={args.ai_provider}")
+    stream = AnnotatedStream()
+    stream_server = ThreadingHTTPServer((args.stream_host, args.stream_port), make_stream_handler(stream))
+    threading.Thread(target=stream_server.serve_forever, daemon=True).start()
+
+    log(f"ready; camera_id={camera_id} model={args.model_path} provider={args.ai_provider} "
+        f"preview=http://{args.stream_host}:{args.stream_port}/annotated.mjpg")
 
     try:
         while True:
@@ -663,12 +760,13 @@ def main() -> None:
                 recorder.finish()
                 tracker.reset()
                 track_queues.clear()
+                stream.clear()
                 log(f"camera session ended ({status.get('error') if status else 'bridge unreachable'})")
 
             if session_active:
                 frame = fetch_frame(f"{args.bridge_url}/api/mipi/frame.jpg")
                 if frame is not None:
-                    _run_cycle(frame, model, tracker, recorder, track_queues, io_worker, args)
+                    _run_cycle(frame, model, tracker, recorder, track_queues, io_worker, args, stream)
 
             while True:
                 try:
@@ -686,12 +784,14 @@ def main() -> None:
         io_worker.stop()
         io_worker.join(timeout=5)
         io_worker.flush_now()
+        stream_server.shutdown()
 
 
-def _run_cycle(frame, model, tracker, recorder, track_queues, io_worker, args) -> None:
+def _run_cycle(frame, model, tracker, recorder, track_queues, io_worker, args, stream) -> None:
     detections = [d for d in model.detect(frame, args.conf_threshold, args.iou_threshold) if d["classId"] == PERSON_CLASS_ID]
     tracked = tracker.update(detections)
     recorder.observe(tracked, tracker.has_track)
+    stream.publish(frame, tracked)
 
     live_ids = {det["trackId"] for det in tracked}
     for track_id in list(track_queues.keys()):

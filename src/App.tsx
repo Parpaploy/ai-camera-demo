@@ -237,6 +237,8 @@ export default function App() {
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraSource, setCameraSource] = useState<CameraSource>("browser");
   const [mipiStreamUrl, setMipiStreamUrl] = useState("");
+  const [detectStreamUrl, setDetectStreamUrl] = useState("");
+  const [detectPreviewOk, setDetectPreviewOk] = useState(false);
 
   const [attireMode, setAttireMode] =
     useState<AttireDetectionMode>(DEFAULT_ATTIRE_MODE);
@@ -773,6 +775,8 @@ export default function App() {
 
     setCameraActive(false);
     setMipiStreamUrl("");
+    setDetectStreamUrl("");
+    setDetectPreviewOk(false);
     setStatus("idle");
     setDetections([]);
     setPersonDescriptions({});
@@ -973,6 +977,8 @@ export default function App() {
         }
 
         setMipiStreamUrl(`/api/mipi/stream.mjpg?session=${Date.now()}`);
+        setDetectStreamUrl(`/api/detect/annotated.mjpg?session=${Date.now()}`);
+        setDetectPreviewOk(false);
         cameraLoopActiveRef.current = true;
       } else {
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -1817,20 +1823,32 @@ export default function App() {
                   {cameraActive ? (
                     <>
                       {cameraSource === "rdk-mipi" ? (
-                        <img
-                          ref={mipiImageRef}
-                          src={mipiStreamUrl}
-                          alt="ภาพสดจากกล้อง MIPI ของ RDK X5"
-                          onError={() => {
-                            if (!cameraLoopActiveRef.current) return;
-                            stopCamera();
-                            setStatus("error");
-                            setErrorMsg(
-                              "รับภาพจากกล้อง MIPI ไม่ได้ ตรวจสอบบริการบน RDK X5 แล้วลองปิดและเปิดกล้องใหม่",
-                            );
-                          }}
-                          className="absolute inset-0 block h-full w-full object-contain"
-                        />
+                        <>
+                          <img
+                            ref={mipiImageRef}
+                            src={mipiStreamUrl}
+                            alt="ภาพสดจากกล้อง MIPI ของ RDK X5"
+                            onError={() => {
+                              if (!cameraLoopActiveRef.current) return;
+                              stopCamera();
+                              setStatus("error");
+                              setErrorMsg(
+                                "รับภาพจากกล้อง MIPI ไม่ได้ ตรวจสอบบริการบน RDK X5 แล้วลองปิดและเปิดกล้องใหม่",
+                              );
+                            }}
+                            className="absolute inset-0 block h-full w-full object-contain"
+                          />
+                          {/* Overlay with boxes drawn by rdk_detector.py. Independent of the raw
+                              stream above — if the detector isn't running yet/crashed, this just
+                              stays hidden and the plain camera feed underneath keeps showing. */}
+                          <img
+                            src={detectStreamUrl}
+                            alt="ภาพพร้อมกรอบตรวจจับจาก RDK X5"
+                            onLoad={() => setDetectPreviewOk(true)}
+                            onError={() => setDetectPreviewOk(false)}
+                            className={`absolute inset-0 block h-full w-full object-contain ${detectPreviewOk ? "" : "hidden"}`}
+                          />
+                        </>
                       ) : (
                         <video
                           ref={videoRef}
